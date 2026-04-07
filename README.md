@@ -22,7 +22,7 @@ npm start
 
 ## Linux 一键部署（systemd + Nginx）
 
-在服务器上将本仓库置于任意目录（例如 `/home/你的用户/HomePortal`），**务必用「登录用户」执行 sudo**（会设置 `SUDO_USER`，脚本才能把目录属主交给该用户，且用 **pnpm** 安装依赖）：
+在服务器上将本仓库置于任意目录（例如 `/home/你的用户/HomePortal`），**务必用「登录用户」执行 sudo**（会设置 `SUDO_USER`，脚本才能把目录属主交给该用户，且用 **pnpm** 安装依赖）。脚本会在 **`pnpm install` 之前**（交互终端下）询问**是否有公网域名**；若 `.env` 里已有真实域名则自动沿用并跳过该步。
 
 ```bash
 cd HomePortal
@@ -35,10 +35,10 @@ sudo bash deploy.sh
 
 脚本会：
 
-1. **首次运行**：提示设置管理员密码；**默认密码为 `rainy`**，直接回车即采用；并自动生成 `JWT_SECRET`、写入 `.env`、创建标记文件 `.homeportal-deploy-init`（仅首次出现向导）。
+1. **首次运行**：在依赖安装前询问**是否有公网域名**（有则填写，写入 `.env` 的 `HOMEPORTAL_SERVER_NAME`）；再提示设置管理员密码；**默认密码为 `rainy`**；自动生成 `JWT_SECRET`、创建标记文件 `.homeportal-deploy-init`（仅首次出现向导）。
 2. **非首次**：跳过密码向导，执行 **`pnpm install --prod`**、刷新 systemd 与 Nginx。
 3. 注册并启用 **`home-portal`** systemd 服务（**开机自启**）。
-4. 若已安装 **Nginx**：写入 `sites-available/home-portal`，将 **80 端口**反代到本服务监听端口（默认 `3000`）。脚本会扫描 `sites-enabled` 中是否已有 **`default_server`**：若无则为本站加上；若有则**列出文件**并询问是否从其他站点移除 `default_server` 后由 HomePortal 接管。**非交互**（如 CI）可设环境变量 **`HOMEPORTAL_DEFAULT_SERVER=replace`** 表示接管，**`=keep`**（默认）表示不改动他站。HTTPS（`:443`）与证书仍可能由 Certbot 等单独配置，若用域名访问仍不对，请检查 `:443` 的 `server_name` 与证书域名是否一致。
+4. 若已安装 **Nginx**：写入 `sites-available/home-portal`，将 **HTTP :80** 反代到本服务（默认端口 `3000`）。**`server_name` 来自环境变量或 `.env` 的 `HOMEPORTAL_SERVER_NAME`**（须与浏览器访问的域名一致，否则浏览器走 `https` 时会落到别的站点、仍显示 Nginx 默认页）。若 **`/etc/letsencrypt/live/`** 下已有与域名匹配的证书，脚本会**自动生成 HTTPS :443** 反代块；否则请先执行 **`certbot`** 申请证书后再跑一次 `deploy.sh`。脚本会扫描 `sites-enabled` 中是否已有 **`default_server`**（仅针对 **:80**）：若无则为本站加上；若有则列出并询问是否由他站移除后由 HomePortal 接管。**非交互**可设 **`HOMEPORTAL_DEFAULT_SERVER=replace|keep`**（默认 `keep`）。
 
 **二次修改密码或 JWT**：编辑安装目录下的 `.env`，然后执行：
 
@@ -50,7 +50,7 @@ sudo systemctl restart home-portal
 
 若未安装 Nginx，脚本会提示安装命令；安装后再次执行 `sudo bash deploy.sh` 即可生成反代配置。
 
-**与同机多站共存**：若他站已占用 `default_server`，部署时可选择是否让 HomePortal 接管（脚本会备份并从他站配置中去掉 `default_server`）。若未接管，请用 **`HOMEPORTAL_SERVER_NAME=你的域名`** 部署（或事后改 Nginx 的 `server_name`），使浏览器请求的 Host 与之一致；否则公网 IP 或未匹配的 Host 可能仍落到其他站点。本机直连仍可用 `http://127.0.0.1:3000/`（或 `.env` 中的 `PORT`）。
+**与同机多站 / HTTPS**：公网用 **域名** 访问时，请在 `.env` 中设置 **`HOMEPORTAL_SERVER_NAME=www.example.com example.com`**（或部署前 `export` 同名变量），与证书/Certbot 中的域名一致。若 `nginx -t` 报 **conflicting server name** 或 **duplicate listen** 针对 **:443**，说明 `sites-enabled` 里另有站点已占用该域名，需禁用或合并重复配置。本机直连仍可用 `http://127.0.0.1:3000/`（或 `.env` 中的 `PORT`）。
 
 ## 与 Nginx 集成（手动示例）
 

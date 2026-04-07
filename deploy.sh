@@ -9,6 +9,7 @@
 # 依赖：Node.js；脚本内 ensure_pnpm（corepack / npm -g）
 # Nginx：检测其他站点是否占用 default_server；可交互是否移除并让本站点成为 default
 #   非交互：HOMEPORTAL_DEFAULT_SERVER=replace|keep（默认 keep，不改动他站）
+# 域名：部署前（pnpm 之前）交互询问是否有公网域名；HOMEPORTAL_SERVER_NAME 写入 .env；HTTPS 若存在 Let's Encrypt 则写 :443
 # 开头：停同名 systemd/PM2；结尾 ✅/❌；不自动 ufw；LISTEN_HOST=127.0.0.1
 # ============================================
 set -euo pipefail
@@ -104,6 +105,47 @@ if ! sudo -u "$RUN_USER" test -w "$INSTALL_DIR" 2>/dev/null; then
 fi
 
 echo "HomePortal 安装目录: $INSTALL_DIR"
+
+# ---------- 部署前：是否公网域名（在 pnpm 等耗时步骤之前；HTTPS 须与浏览器域名一致）----------
+HP_EARLY_SRV=""
+_hp_sn_preview=""
+_hp_sn_preview_norm=""
+if [ -f "$INSTALL_DIR/.env" ]; then
+  _l="$(grep -E '^[[:space:]]*HOMEPORTAL_SERVER_NAME=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 || true)"
+  _hp_sn_preview="${_l#*=}"
+  _hp_sn_preview="${_hp_sn_preview//\"/}"
+  _hp_sn_preview="${_hp_sn_preview//\'/}"
+  _hp_sn_preview="${_hp_sn_preview//$'\r'/}"
+  _hp_sn_preview_norm="$(echo "${_hp_sn_preview:-}" | tr -cd 'a-zA-Z0-9._- ' | xargs)"
+fi
+
+if [ -n "${HOMEPORTAL_SERVER_NAME:-}" ]; then
+  HP_EARLY_SRV=""
+elif [ -n "$_hp_sn_preview_norm" ] && [ "$_hp_sn_preview_norm" != "home-portal.local" ]; then
+  HP_EARLY_SRV="$_hp_sn_preview_norm"
+  echo "▸ 沿用 .env 中的域名（server_name）: $HP_EARLY_SRV"
+  echo "  若要修改：编辑 $INSTALL_DIR/.env 中的 HOMEPORTAL_SERVER_NAME，或执行 HOMEPORTAL_SERVER_NAME=新域名 sudo bash deploy.sh"
+elif [ -t 0 ]; then
+  echo ""
+  echo "──────── Nginx / 公网访问 ────────"
+  echo "若仅本机或内网调试，选「否」即可；若公网用域名访问（含 https），选「是」并填写域名。"
+  read -r -p "是否有公网域名用于本站（与浏览器地址栏一致）？[y/N] " _hp_has_pub
+  case "${_hp_has_pub}" in
+    [yY][eE][sS]|[yY])
+      read -r -p "请输入域名（空格分隔多个，如 www.example.com example.com）: " _hp_dom_in
+      HP_EARLY_SRV="$(echo "${_hp_dom_in:-}" | tr -cd 'a-zA-Z0-9._- ' | xargs)"
+      [ -z "$HP_EARLY_SRV" ] && HP_EARLY_SRV="home-portal.local"
+      ;;
+    *)
+      HP_EARLY_SRV="home-portal.local"
+      ;;
+  esac
+  echo "▸ 将使用 server_name: $HP_EARLY_SRV"
+else
+  HP_EARLY_SRV="${_hp_sn_preview_norm:-home-portal.local}"
+  [ -z "$HP_EARLY_SRV" ] && HP_EARLY_SRV="home-portal.local"
+fi
+
 echo "▸ 依赖安装: pnpm install --prod（用户: $RUN_USER，Node $($NODE_BIN -v)，$($PNPM_BIN -v)）"
 
 # HOME 指向项目目录，避免 www-data 等用户因 /var/www 不可写导致 npm/pnpm 缓存失败
@@ -126,6 +168,10 @@ if [ ! -f "$MARKER" ]; then
   echo ""
   [ -z "${HPWD:-}" ] && HPWD=rainy
 
+  # 域名已在 pnpm 之前问过（HP_EARLY_SRV）；无则占位
+  WIZ_SRV="${HP_EARLY_SRV:-home-portal.local}"
+  [ -z "$WIZ_SRV" ] && WIZ_SRV="home-portal.local"
+
   JWT_SECRET_VALUE="$(openssl rand -hex 32)"
   PORT_VALUE="${PORT:-3000}"
 
@@ -135,6 +181,7 @@ if [ ! -f "$MARKER" ]; then
     printf 'ADMIN_PASSWORD=%q\n' "$HPWD"
     echo "JWT_SECRET=$JWT_SECRET_VALUE"
     echo "PORTAL_TITLE=指引页"
+    printf 'HOMEPORTAL_SERVER_NAME=%q\n' "$WIZ_SRV"
   } > "$INSTALL_DIR/.env"
 
   chmod 600 "$INSTALL_DIR/.env"
@@ -167,6 +214,42 @@ APP_PORT="${APP_PORT//\"/}"
 APP_PORT="${APP_PORT//\'/}"
 APP_PORT="${APP_PORT//$'\r'/}"
 APP_PORT="${APP_PORT:-3000}"
+
+# ---------- Nginx server_name（持久化 .env 的 HOMEPORTAL_SERVER_NAME；公网/HTTPS 必须与域名一致）----------
+_hp_sn_file=""
+if [ -f "$INSTALL_DIR/.env" ]; then
+  _l="$(grep -E '^[[:space:]]*HOMEPORTAL_SERVER_NAME=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 || true)"
+  _hp_sn_file="${_l#*=}"
+  _hp_sn_file="${_hp_sn_file//\"/}"
+  _hp_sn_file="${_hp_sn_file//\'/}"
+  _hp_sn_file="${_hp_sn_file//$'\r'/}"
+fi
+if [ -n "${HOMEPORTAL_SERVER_NAME:-}" ]; then
+  HOMEPORTAL_SRV_NAME="$HOMEPORTAL_SERVER_NAME"
+elif [ -n "${HP_EARLY_SRV:-}" ]; then
+  HOMEPORTAL_SRV_NAME="$HP_EARLY_SRV"
+elif [ -n "$_hp_sn_file" ]; then
+  HOMEPORTAL_SRV_NAME="$_hp_sn_file"
+elif [ -t 0 ]; then
+  echo ""
+  read -r -p "Nginx server_name（域名，空格分隔；须与浏览器访问域名一致；回车=home-portal.local）: " _hp_sn_read
+  HOMEPORTAL_SRV_NAME="${_hp_sn_read:-}"
+else
+  HOMEPORTAL_SRV_NAME="home-portal.local"
+fi
+HOMEPORTAL_SRV_NAME="$(echo "${HOMEPORTAL_SRV_NAME:-home-portal.local}" | tr -cd 'a-zA-Z0-9._- ' | xargs)"
+[ -z "$HOMEPORTAL_SRV_NAME" ] && HOMEPORTAL_SRV_NAME="home-portal.local"
+
+homeportal_env_sync_server_name() {
+  [ ! -f "$INSTALL_DIR/.env" ] && return 0
+  _tmp="$(mktemp)"
+  grep -vE '^[[:space:]]*HOMEPORTAL_SERVER_NAME=' "$INSTALL_DIR/.env" > "$_tmp" 2>/dev/null || true
+  printf 'HOMEPORTAL_SERVER_NAME=%q\n' "$HOMEPORTAL_SRV_NAME" >> "$_tmp"
+  mv "$_tmp" "$INSTALL_DIR/.env"
+  chown "$RUN_USER:$RUN_USER" "$INSTALL_DIR/.env" 2>/dev/null || true
+  chmod 600 "$INSTALL_DIR/.env" 2>/dev/null || true
+}
+homeportal_env_sync_server_name
 
 # 旧 .env 无 LISTEN_HOST 时补全，与 server 默认仅监听本机一致
 if [ -f "$INSTALL_DIR/.env" ] && ! grep -qE '^[[:space:]]*LISTEN_HOST=' "$INSTALL_DIR/.env" 2>/dev/null; then
@@ -268,14 +351,79 @@ else
     listen [::]:80;"
 fi
 
-HOMEPORTAL_SRV_NAME="${HOMEPORTAL_SERVER_NAME:-home-portal.local}"
-HOMEPORTAL_SRV_NAME="$(echo "$HOMEPORTAL_SRV_NAME" | tr -cd 'a-zA-Z0-9._-')"
-[ -z "$HOMEPORTAL_SRV_NAME" ] && HOMEPORTAL_SRV_NAME="home-portal.local"
+# HTTPS：在 /etc/letsencrypt/live/ 下查找与 server_name 匹配的证书并生成 :443 反代（浏览器默认走 https）
+HP_LE_CERT=""
+HP_LE_KEY=""
+_hp_sn_array=()
+read -r -a _hp_sn_array <<< "$HOMEPORTAL_SRV_NAME"
+for _sn in "${_hp_sn_array[@]}"; do
+  [ -z "$_sn" ] && continue
+  if [ -f "/etc/letsencrypt/live/${_sn}/fullchain.pem" ] && [ -f "/etc/letsencrypt/live/${_sn}/privkey.pem" ]; then
+    HP_LE_CERT="/etc/letsencrypt/live/${_sn}/fullchain.pem"
+    HP_LE_KEY="/etc/letsencrypt/live/${_sn}/privkey.pem"
+    break
+  fi
+done
+if [ -z "$HP_LE_CERT" ] && [ -d /etc/letsencrypt/live ] && [ "$HOMEPORTAL_SRV_NAME" != "home-portal.local" ] && command -v openssl >/dev/null 2>&1; then
+  for _d in /etc/letsencrypt/live/*; do
+    [ -d "$_d" ] || continue
+    [ "$(basename "$_d")" = "README" ] && continue
+    [ -f "$_d/fullchain.pem" ] && [ -f "$_d/privkey.pem" ] || continue
+    _ok=0
+    for _sn in "${_hp_sn_array[@]}"; do
+      [ -z "$_sn" ] && continue
+      if openssl x509 -in "$_d/fullchain.pem" -noout -text 2>/dev/null | grep -Fq "DNS:$_sn"; then
+        _ok=1
+        break
+      fi
+    done
+    if [ "$_ok" -eq 1 ]; then
+      HP_LE_CERT="$_d/fullchain.pem"
+      HP_LE_KEY="$_d/privkey.pem"
+      break
+    fi
+  done
+fi
+
+HP_SSL_EXTRA=""
+[ -f /etc/letsencrypt/options-ssl-nginx.conf ] && HP_SSL_EXTRA="    include /etc/letsencrypt/options-ssl-nginx.conf;
+"
+[ -f /etc/letsencrypt/ssl-dhparams.pem ] && HP_SSL_EXTRA+="    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+"
+
+HP_SSL_SERVER_BLOCK=""
+if [ -n "$HP_LE_CERT" ]; then
+  HP_SSL_SERVER_BLOCK="$(cat <<SSLBLK
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name ${HOMEPORTAL_SRV_NAME};
+
+    ssl_certificate ${HP_LE_CERT};
+    ssl_certificate_key ${HP_LE_KEY};
+${HP_SSL_EXTRA}
+    location / {
+        proxy_pass http://127.0.0.1:${APP_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+}
+SSLBLK
+)"
+fi
 
 if command -v nginx >/dev/null 2>&1; then
   tee "$NGINX_SITE" > /dev/null <<NGINX
 # HomePortal — 由 deploy.sh 生成
-# default_server：见本脚本对「他站 default」的检测与交互；HTTPS/443 请单独检查 ssl 站点中的 server_name
+# default_server：见脚本内「他站 default」检测；HTTPS：若存在 Let's Encrypt 证书则自动生成下方 :443 块
 server {
 ${LISTEN_BLOCK}
     server_name ${HOMEPORTAL_SRV_NAME};
@@ -293,6 +441,7 @@ ${LISTEN_BLOCK}
         proxy_send_timeout 300s;
     }
 }
+${HP_SSL_SERVER_BLOCK}
 NGINX
 
   if [ -L /etc/nginx/sites-enabled/default ]; then
@@ -303,16 +452,28 @@ NGINX
   if nginx -t; then
     systemctl reload nginx 2>/dev/null || service nginx reload 2>/dev/null || true
     NGINX_RELOAD_OK=1
+    _hp_ssl_note=""
+    [ -n "$HP_LE_CERT" ] && _hp_ssl_note=" · HTTPS:443 已用证书反代（${HP_LE_CERT}）"
     if [ "$HP_HOMEPORTAL_DEFAULT" -eq 1 ]; then
-      echo "▸ Nginx：本站点为 80 的 default_server · server_name ${HOMEPORTAL_SRV_NAME} · → 127.0.0.1:${APP_PORT}（已 reload）"
+      echo "▸ Nginx：本站点为 80 的 default_server · server_name ${HOMEPORTAL_SRV_NAME} · → 127.0.0.1:${APP_PORT}${_hp_ssl_note}（已 reload）"
     else
-      echo "▸ Nginx：未使用 default_server · server_name ${HOMEPORTAL_SRV_NAME} · → 127.0.0.1:${APP_PORT}（已 reload）"
+      echo "▸ Nginx：未使用 default_server · server_name ${HOMEPORTAL_SRV_NAME} · → 127.0.0.1:${APP_PORT}${_hp_ssl_note}（已 reload）"
       echo ""
       echo "  提示：用域名访问时请保证浏览器 Host 与 server_name 一致，或执行本脚本时选择接管 default。"
-      echo "  HTTPS 若仍异常，请检查 sites-enabled 里 :443 的 server_name / ssl 是否与证书域名一致（本脚本只写 HTTP:80）。"
+      if [ -z "$HP_LE_CERT" ]; then
+        echo "  HTTPS：未检测到 Let's Encrypt 证书路径时未写 :443；若仍见 Nginx 默认页，请先申请证书后重跑本脚本。"
+      fi
+    fi
+    if [ -z "$HP_LE_CERT" ] && [ "$HOMEPORTAL_SRV_NAME" != "home-portal.local" ]; then
+      echo ""
+      echo "▸ 未找到与 server_name 匹配的 /etc/letsencrypt/live/ 证书，HTTPS 可能仍由其他站点处理。"
+      echo "  可先: sudo certbot certonly --nginx -d www.你的域名.com   然后再次执行: sudo bash deploy.sh"
     fi
   else
     echo "警告: nginx -t 失败，请检查: $NGINX_SITE" >&2
+    if grep -q "443" "$NGINX_SITE" 2>/dev/null; then
+      echo "  若提示 conflicting server name 或 duplicate listen，请检查 sites-enabled 是否已有同名域名的其它 SSL 配置，可暂时禁用冲突文件后重试。" >&2
+    fi
   fi
 else
   NGINX_NOT_INSTALLED=1
