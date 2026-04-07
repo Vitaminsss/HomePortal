@@ -18,6 +18,18 @@ const PORTAL_TITLE   = process.env.PORTAL_TITLE   || '指引页';
 
 app.use(cors());
 app.use(express.json());
+
+// 管理后台对外地址用 /#admin；iframe 内嵌需 ?embed=1 否则重定向会与嵌套冲突
+app.get('/admin.html', (req, res) => {
+  if (req.query.embed === '1') {
+    return res.sendFile(path.join(__dirname, 'public', 'admin.html'));
+  }
+  res.redirect(302, '/#admin');
+});
+app.get('/admin', (_req, res) => {
+  res.redirect(302, '/#admin');
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ── Data helpers ──────────────────────────────────────────────────────────────
@@ -152,6 +164,6 @@ app.put('/api/reorder', auth, (req, res) => {
 
 app.listen(PORT, LISTEN_HOST, () => {
   console.log(`\n  🌐 HomePortal  →  http://${LISTEN_HOST}:${PORT}`);
-  console.log(`  🔧 Admin Panel →  http://${LISTEN_HOST}:${PORT}/admin.html`);
+  console.log(`  🔧 Admin Panel →  http://${LISTEN_HOST}:${PORT}/#admin`);
   console.log(`  📁 Data file   →  ${DATA_FILE}\n`);
 });

@@ -168,6 +168,18 @@ if [ ! -f "$MARKER" ]; then
   echo ""
   [ -z "${HPWD:-}" ] && HPWD=rainy
 
+  # 浏览器标签页标题：可部署前设 PORTAL_TITLE=名称 sudo bash deploy.sh；交互时询问
+  WIZ_PORTAL_TITLE="指引页"
+  if [ -n "${PORTAL_TITLE:-}" ]; then
+    WIZ_PORTAL_TITLE="${PORTAL_TITLE}"
+  elif [ -t 0 ]; then
+    echo ""
+    read -r -p "浏览器标签页标题（站点名称，回车=指引页）: " _wiz_pt
+    [ -n "${_wiz_pt:-}" ] && WIZ_PORTAL_TITLE="$_wiz_pt"
+  fi
+  WIZ_PORTAL_TITLE="$(echo "${WIZ_PORTAL_TITLE:-}" | xargs)"
+  [ -z "$WIZ_PORTAL_TITLE" ] && WIZ_PORTAL_TITLE="指引页"
+
   # 域名已在 pnpm 之前问过（HP_EARLY_SRV）；无则占位
   WIZ_SRV="${HP_EARLY_SRV:-home-portal.local}"
   [ -z "$WIZ_SRV" ] && WIZ_SRV="home-portal.local"
@@ -180,7 +192,7 @@ if [ ! -f "$MARKER" ]; then
     echo "LISTEN_HOST=127.0.0.1"
     printf 'ADMIN_PASSWORD=%q\n' "$HPWD"
     echo "JWT_SECRET=$JWT_SECRET_VALUE"
-    echo "PORTAL_TITLE=指引页"
+    printf 'PORTAL_TITLE=%q\n' "$WIZ_PORTAL_TITLE"
     printf 'HOMEPORTAL_SERVER_NAME=%q\n' "$WIZ_SRV"
   } > "$INSTALL_DIR/.env"
 
@@ -198,7 +210,7 @@ if [ ! -f "$MARKER" ]; then
 
   echo ""
   echo "已写入: $INSTALL_DIR/.env"
-  echo "二次修改密码或 JWT：编辑该文件后执行:"
+  echo "二次修改密码、标签页标题（PORTAL_TITLE）或 JWT：编辑该文件后执行:"
   echo "  sudo systemctl restart $SERVICE_NAME"
   echo ""
 elif [ ! -f "$INSTALL_DIR/.env" ]; then
@@ -511,7 +523,7 @@ echo ""
 echo "访问与路径"
 echo "────────────────────────────────────────"
 printf "  %-16s %s\n" "本机首页" "http://127.0.0.1:${APP_PORT}/"
-printf "  %-16s %s\n" "本机后台" "http://127.0.0.1:${APP_PORT}/admin.html"
+printf "  %-16s %s\n" "本机后台" "http://127.0.0.1:${APP_PORT}/#admin"
 if [ "${NGINX_RELOAD_OK:-0}" -eq 1 ]; then
   if [ "${HP_HOMEPORTAL_DEFAULT:-0}" -eq 1 ]; then
     printf "  %-16s %s\n" "公网:80" "未匹配其他 server 时将到本站（default_server）"
