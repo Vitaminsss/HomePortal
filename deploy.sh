@@ -6,6 +6,7 @@
 #
 # 首次运行：交互设置管理员密码（默认 rainy）、生成 JWT、写 .env
 # 非首次：跳过密码向导，更新依赖并刷新 systemd / Nginx
+# 开头：若已有同名 systemd / PM2 进程则先停止；结尾：✅/❌ 汇总
 # ============================================
 set -euo pipefail
 
@@ -37,6 +38,20 @@ else
 fi
 
 cd "$INSTALL_DIR"
+
+# 若已有 systemd 单元或 PM2 同名进程，先停止/移除，避免更新依赖时旧进程占用端口
+homeportal_runtime_teardown() {
+  if systemctl cat "${SERVICE_NAME}.service" &>/dev/null; then
+    echo "▸ 检测到已有 systemd 服务「${SERVICE_NAME}」，先停止以便重新部署..."
+    systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+  fi
+  if command -v pm2 &>/dev/null && pm2 describe "$SERVICE_NAME" &>/dev/null; then
+    echo "▸ 检测到 PM2 中有同名应用「${SERVICE_NAME}」，先停止并删除（本脚本使用 systemd 托管）..."
+    pm2 stop "$SERVICE_NAME" 2>/dev/null || true
+    pm2 delete "$SERVICE_NAME" 2>/dev/null || true
+  fi
+}
+homeportal_runtime_teardown
 
 # 若目录属主为 root 且通过「用户 sudo」调用，整目录交给该用户以便 npm 写入
 if [ "$(stat -c '%U' "$INSTALL_DIR" 2>/dev/null || echo root)" = root ] && [ -n "${SUDO_USER:-}" ]; then
@@ -134,16 +149,50 @@ systemctl daemon-reload
 systemctl enable "$SERVICE_NAME"
 systemctl restart "$SERVICE_NAME"
 
+SYSTEMD_OK=0
+systemctl is-active --quiet "$SERVICE_NAME" && SYSTEMD_OK=1
+
 echo "systemd: 已启用并启动 $SERVICE_NAME（开机自启）"
 
 # ---------- Nginx ----------
+NGINX_RELOAD_OK=0
+NGINX_NOT_INSTALLED=0
+# server_name 使用唯一占位名（默认 home-portal.local），勿用 _，避免与同机 release-hub 等冲突
+# 可通过环境变量覆盖：HOMEPORTAL_SERVER_NAME=portal.example.com sudo bash deploy.sh
+# 与同机其他站点不能同时声明 default_server，否则 nginx -t 报错 duplicate default server
+OTHER_HAS_DEFAULT=0
+if [ -d /etc/nginx/sites-enabled ]; then
+  for f in /etc/nginx/sites-enabled/*; do
+    [ -e "$f" ] || continue
+    case "$(basename "$f" 2>/dev/null || echo "")" in
+      home-portal) continue ;;
+    esac
+    if grep -qE 'listen[[:space:]]+.*default_server' "$f" 2>/dev/null; then
+      OTHER_HAS_DEFAULT=1
+      break
+    fi
+  done
+fi
+
+if [ "$OTHER_HAS_DEFAULT" -eq 1 ]; then
+  LISTEN_BLOCK="    # no default_server here: another site (e.g. release-hub) already has it
+    listen 80;
+    listen [::]:80;"
+else
+  LISTEN_BLOCK="    listen 80 default_server;
+    listen [::]:80 default_server;"
+fi
+
+HOMEPORTAL_SRV_NAME="${HOMEPORTAL_SERVER_NAME:-home-portal.local}"
+HOMEPORTAL_SRV_NAME="$(echo "$HOMEPORTAL_SRV_NAME" | tr -cd 'a-zA-Z0-9._-')"
+[ -z "$HOMEPORTAL_SRV_NAME" ] && HOMEPORTAL_SRV_NAME="home-portal.local"
+
 if command -v nginx >/dev/null 2>&1; then
   tee "$NGINX_SITE" > /dev/null <<NGINX
 # HomePortal — 由 deploy.sh 生成
 server {
-    listen 80 default_server;
-    listen [::]:80 default_server;
-    server_name _;
+${LISTEN_BLOCK}
+    server_name ${HOMEPORTAL_SRV_NAME};
 
     location / {
         proxy_pass http://127.0.0.1:${APP_PORT};
@@ -167,17 +216,65 @@ NGINX
 
   if nginx -t; then
     systemctl reload nginx 2>/dev/null || service nginx reload 2>/dev/null || true
-    echo "Nginx: 已配置反代 80 -> 127.0.0.1:${APP_PORT}，并已 reload"
+    NGINX_RELOAD_OK=1
+    echo "Nginx: server_name ${HOMEPORTAL_SRV_NAME} · 反代 80 -> 127.0.0.1:${APP_PORT}（已 reload）"
+    if [ "$OTHER_HAS_DEFAULT" -eq 1 ]; then
+      echo ""
+      echo "提示: 检测到本机已有站点使用 default_server（例如 release-hub）。"
+      echo "      本配置未声明 default_server，避免 nginx 冲突；访问 IP:80 时仍由该站点响应。"
+      echo "      访问 HomePortal 请使用: http://127.0.0.1:${APP_PORT}/ 或合并两服务的 location 到同一 server。"
+    fi
   else
     echo "警告: nginx -t 失败，请检查: $NGINX_SITE" >&2
   fi
 else
+  NGINX_NOT_INSTALLED=1
   echo ""
   echo "未检测到 Nginx。若需从 80 端口访问，可安装后重新执行:"
   echo "  sudo apt-get update && sudo apt-get install -y nginx"
   echo "  sudo bash $(basename "$0")"
 fi
 
+# 不自动 ufw allow：与 Release Hub 一致，避免脚本擅自对外开放端口（见文末防火墙说明）。
+
 echo ""
-echo "完成。直连 Node: http://127.0.0.1:${APP_PORT}/  管理后台: /admin.html"
-echo "修改密码: sudo nano $INSTALL_DIR/.env  然后: sudo systemctl restart $SERVICE_NAME"
+echo "──────── 部署结果 ────────"
+if [ "${SYSTEMD_OK:-0}" -eq 1 ]; then
+  echo "✅ systemd：服务「$SERVICE_NAME」已运行（127.0.0.1:${APP_PORT}）"
+else
+  echo "❌ systemd：服务未处于 active，请执行: systemctl status $SERVICE_NAME"
+fi
+
+if [ "${NGINX_NOT_INSTALLED:-0}" -eq 1 ]; then
+  echo "❌ Nginx：未安装，当前仅可直连 Node 端口"
+elif [ "${NGINX_RELOAD_OK:-0}" -eq 1 ]; then
+  echo "✅ Nginx：反代已配置并 reload（server_name ${HOMEPORTAL_SRV_NAME}）"
+else
+  if command -v nginx &>/dev/null; then
+    echo "❌ Nginx：配置未通过 nginx -t 或未 reload，请检查: $NGINX_SITE"
+  else
+    echo "❌ Nginx：异常"
+  fi
+fi
+
+[ -f "$INSTALL_DIR/.env" ] && echo "✅ 配置：$INSTALL_DIR/.env 已就绪" || echo "❌ 配置：缺少 $INSTALL_DIR/.env"
+
+echo "⚠ 防火墙：脚本不会自动执行 ufw，避免擅自对外开放端口；请在云安全组或本机 ufw 按需手动放行（见下「温馨提醒」）。"
+
+echo ""
+echo "访问与路径"
+echo "────────────────────────────────────────"
+printf "  %-16s %s\n" "首页（直连）" "http://127.0.0.1:${APP_PORT}/"
+printf "  %-16s %s\n" "管理后台" "http://127.0.0.1:${APP_PORT}/admin.html"
+if [ "${NGINX_RELOAD_OK:-0}" -eq 1 ]; then
+  printf "  %-16s %s\n" "经 Nginx:80" "http://127.0.0.1/（视 default_server 与同机站点而定）"
+fi
+
+echo ""
+echo "💡 温馨提醒"
+echo "  · 默认密码为 rainy，登录后台后请尽快修改为强密码。"
+echo "  · 修改密码或 JWT：编辑 $INSTALL_DIR/.env 后执行 sudo systemctl restart $SERVICE_NAME"
+echo "  · 与同机 Release Hub 并存时，若未占 default_server，用 IP:80 可能先到其他站点；可用 127.0.0.1:${APP_PORT} 或合并 Nginx server。"
+echo "  · 防火墙：已配置 Nginx 反代时，公网一般只需放行 80；请勿把应用端口 ${APP_PORT} 对公网暴露（由 Nginx 反代到 127.0.0.1）。无 Nginx 时需外网直连再单独评估是否放行 ${APP_PORT}。"
+echo "  · 常用：systemctl status $SERVICE_NAME · journalctl -u $SERVICE_NAME -f · 再次部署可重复执行本脚本。"
+echo ""
