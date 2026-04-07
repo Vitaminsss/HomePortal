@@ -1,0 +1,797 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>指引页</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --placeholder:   rgba(100, 103, 120, 0.42);
+      --bg:            #08090e;
+      --surface:       #0d0f16;
+      --surface-2:     #12141d;
+      --border:        rgba(255,255,255,0.06);
+      --border-card:   rgba(255,255,255,0.08);
+      --text:          #f0f0f5;
+      --text-2:        #8b8da0;
+      --text-3:        #44465a;
+      --green:         #4ade80;
+      --radius-card:   18px;
+      --transition:    0.25s cubic-bezier(.4,0,.2,1);
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      min-height: 100vh;
+      overflow-x: hidden;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── Grid background ── */
+    body::before {
+      content: '';
+      position: fixed; inset: 0; z-index: 0;
+      background-image:
+        linear-gradient(rgba(120,200,255,0.018) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(120,200,255,0.018) 1px, transparent 1px);
+      background-size: 56px 56px;
+      pointer-events: none;
+    }
+
+    /* 全页鼠标跟随光晕（双层叠加，略偏青柠 + 冷色边缘） */
+    .page-glow {
+      position: fixed;
+      inset: 0;
+      z-index: 1;
+      pointer-events: none;
+      overflow: hidden;
+      --gx: 50vw;
+      --gy: 50vh;
+    }
+    .page-glow__layer {
+      position: absolute;
+      inset: -20%;
+      will-change: transform;
+      background: radial-gradient(
+        85vmin ellipse at var(--gx) var(--gy),
+        rgba(200, 255, 100, 0.11) 0%,
+        rgba(120, 210, 255, 0.05) 42%,
+        transparent 68%
+      );
+    }
+    .page-glow__layer--core {
+      inset: -10%;
+      background: radial-gradient(
+        42vmin circle at var(--gx) var(--gy),
+        rgba(255, 255, 255, 0.075) 0%,
+        rgba(210, 255, 120, 0.06) 32%,
+        transparent 65%
+      );
+      mix-blend-mode: screen;
+    }
+
+    /* Radial vignette — fade grid near edges */
+    body::after {
+      content: '';
+      position: fixed; inset: 0; z-index: 2;
+      background: radial-gradient(ellipse 100% 70% at 50% 0%, transparent 25%, var(--bg) 88%);
+      pointer-events: none;
+    }
+
+    /* ── Layout ── */
+    .wrap {
+      position: relative; z-index: 3;
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 0 28px;
+    }
+
+    /* ── Header ── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 24px 0 20px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 28px;
+      opacity: 0;
+      animation: fadeDown 0.5s 0.05s ease forwards;
+    }
+
+    .logo {
+      display: flex; align-items: center;
+      text-decoration: none;
+    }
+    .logo-mark {
+      width: 36px; height: 36px;
+      border-radius: 11px;
+      background: linear-gradient(145deg, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0.02) 100%);
+      border: 1px solid rgba(255,255,255,0.1);
+      box-shadow:
+        0 0 0 1px rgba(0,0,0,0.35) inset,
+        0 8px 32px rgba(200, 255, 100, 0.06);
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+      transition: border-color var(--transition), box-shadow var(--transition);
+    }
+    .logo:hover .logo-mark {
+      border-color: rgba(200, 255, 100, 0.25);
+      box-shadow:
+        0 0 0 1px rgba(0,0,0,0.35) inset,
+        0 8px 36px rgba(200, 255, 100, 0.12);
+    }
+    .logo-mark svg { display: block; }
+
+    .header-right {
+      display: flex; align-items: center; gap: 18px;
+    }
+
+    .live-clock {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      color: var(--text-3);
+      letter-spacing: 0.5px;
+    }
+
+    .btn-outline {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 7px 13px;
+      border: 1px solid var(--border-card);
+      border-radius: 8px;
+      background: transparent;
+      color: var(--text-2);
+      font-family: inherit;
+      font-size: 13px;
+      text-decoration: none;
+      cursor: pointer;
+      transition: all var(--transition);
+    }
+    button.btn-outline {
+      -webkit-appearance: none;
+      appearance: none;
+    }
+    .btn-outline:hover {
+      border-color: rgba(200,255,0,0.35);
+      color: #c8ff00;
+      background: rgba(200,255,0,0.06);
+    }
+    .btn-outline svg { flex-shrink: 0; }
+
+    /* 复制链接提示 */
+    #pageToast {
+      position: fixed;
+      bottom: 28px;
+      left: 50%;
+      transform: translateX(-50%) translateY(12px);
+      padding: 11px 20px;
+      border-radius: 10px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--green);
+      background: rgba(74, 222, 128, 0.12);
+      border: 1px solid rgba(74, 222, 128, 0.22);
+      z-index: 10;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.25s ease, transform 0.25s ease;
+    }
+    #pageToast.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+
+    /* ── Hero ── */
+    .hero {
+      margin-bottom: 28px;
+    }
+
+    .hero-label {
+      font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      font-size: 13px;
+      font-weight: 500;
+      letter-spacing: 0.12em;
+      color: #c8ff00;
+      margin-bottom: 14px;
+      opacity: 0;
+      animation: fadeUp 0.5s 0.15s ease forwards;
+    }
+
+    .hero-title {
+      font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      font-weight: 900;
+      font-size: clamp(40px, 8vw, 76px);
+      line-height: 1.05;
+      letter-spacing: -0.02em;
+      color: var(--text);
+      margin-bottom: 28px;
+      opacity: 0;
+      animation: fadeUp 0.55s 0.25s ease forwards;
+    }
+    .hero-title .dim { color: var(--text-3); }
+
+    .hero-sub {
+      font-size: 15px;
+      color: var(--text-2);
+      font-weight: 300;
+      line-height: 1.7;
+      max-width: 440px;
+      opacity: 0;
+      animation: fadeUp 0.55s 0.35s ease forwards;
+    }
+
+    /* ── Controls bar ── */
+    .controls {
+      display: flex; align-items: center; gap: 14px;
+      margin-bottom: 28px;
+      opacity: 0;
+      animation: fadeUp 0.5s 0.45s ease forwards;
+    }
+
+    .search-box {
+      position: relative; flex: 1; max-width: 380px;
+    }
+    .search-icon {
+      position: absolute; left: 13px; top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-3); pointer-events: none;
+    }
+    .search-input {
+      width: 100%;
+      padding: 10px 14px 10px 38px;
+      background: var(--surface);
+      border: 1px solid var(--border-card);
+      border-radius: 10px;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 14px;
+      outline: none;
+      transition: border-color var(--transition), box-shadow var(--transition);
+    }
+    .search-input::placeholder { color: var(--placeholder); }
+    .search-input:focus {
+      border-color: rgba(200,255,0,0.3);
+      box-shadow: 0 0 0 3px rgba(200,255,0,0.06);
+    }
+
+    /* ── Cards grid ── */
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+      margin-bottom: 48px;
+    }
+
+    @media (max-width: 880px) { .grid { grid-template-columns: repeat(2, 1fr); } }
+    @media (max-width: 540px) { .grid { grid-template-columns: 1fr; } }
+
+    /* ── Card ── */
+    .card {
+      position: relative;
+      background: var(--surface);
+      border: 1px solid var(--border-card);
+      border-radius: var(--radius-card);
+      padding: 26px 24px 22px;
+      color: inherit;
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      overflow: hidden;
+      transition: transform var(--transition), box-shadow var(--transition), border-color var(--transition);
+    }
+
+    /* 整块打开链接（下层）；上层 .card-inner 默认不拦截点击，仅分享按钮可点 */
+    .card-hit-area {
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+      border-radius: inherit;
+      cursor: pointer;
+    }
+
+    .card-inner {
+      position: relative;
+      z-index: 2;
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      min-height: 0;
+      pointer-events: none;
+    }
+
+    .card-head-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    .card-share {
+      pointer-events: auto;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 30px;
+      height: 30px;
+      padding: 0;
+      border: 1px solid var(--border-card);
+      border-radius: 8px;
+      background: rgba(255,255,255,0.04);
+      color: var(--text-2);
+      cursor: pointer;
+      transition: color var(--transition), border-color var(--transition), background var(--transition), box-shadow var(--transition);
+    }
+    .card-share:hover {
+      color: var(--cc, #c8ff00);
+      border-color: color-mix(in srgb, var(--cc, #c8ff00) 35%, transparent);
+      background: color-mix(in srgb, var(--cc, #c8ff00) 10%, transparent);
+    }
+    .card-share svg {
+      display: block;
+      flex-shrink: 0;
+    }
+
+    /* Top color bar */
+    .card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 2px;
+      background: var(--cc, #c8ff00);
+      border-radius: var(--radius-card) var(--radius-card) 0 0;
+      opacity: 0;
+      transition: opacity var(--transition);
+    }
+    .card:hover::before { opacity: 1; }
+
+    .card:hover {
+      transform: translateY(-5px);
+      box-shadow: 0 24px 64px rgba(0,0,0,0.5),
+                  0 0 0 1px color-mix(in srgb, var(--cc, #c8ff00) 20%, transparent);
+    }
+
+    .card.inactive {
+      opacity: 0.38;
+      pointer-events: none;
+    }
+
+    /* Card sections */
+    .card-head {
+      display: flex; align-items: flex-start;
+      justify-content: space-between;
+      margin-bottom: 18px;
+    }
+
+    .card-icon-wrap {
+      width: 46px; height: 46px;
+      border-radius: 12px;
+      background: color-mix(in srgb, var(--cc, #c8ff00) 14%, transparent);
+      border: 1px solid color-mix(in srgb, var(--cc, #c8ff00) 20%, transparent);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 22px;
+      flex-shrink: 0;
+      transition: transform var(--transition);
+    }
+    .card:hover .card-icon-wrap { transform: scale(1.08); }
+
+    .card-badge {
+      display: flex; align-items: center; gap: 5px;
+      font-size: 11px;
+      font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      padding: 3px 9px;
+      border-radius: 20px;
+      flex-shrink: 0;
+    }
+    .card-badge.active {
+      color: var(--green);
+      background: rgba(74,222,128,0.08);
+      border: 1px solid rgba(74,222,128,0.14);
+    }
+    .card-badge.inactive {
+      color: var(--text-3);
+      background: transparent;
+      border: 1px solid var(--border);
+    }
+
+    .badge-dot {
+      width: 5px; height: 5px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+    .card-badge.active .badge-dot {
+      box-shadow: 0 0 5px var(--green);
+      animation: pulse 2.5s ease infinite;
+    }
+
+    .card-name {
+      font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      font-weight: 700;
+      font-size: 16.5px;
+      letter-spacing: -0.4px;
+      margin-bottom: 8px;
+      transition: color var(--transition);
+      line-height: 1.2;
+    }
+    .card:hover .card-name { color: var(--cc, #c8ff00); }
+
+    .card-desc {
+      font-size: 13px;
+      color: var(--text-2);
+      line-height: 1.55;
+      margin-bottom: 18px;
+      flex: 1;
+      min-height: 38px;
+    }
+
+    .card-tags {
+      display: flex; flex-wrap: wrap; gap: 5px;
+      margin-bottom: 16px;
+    }
+    .tag {
+      font-size: 10px;
+      font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      padding: 2px 7px;
+      border-radius: 4px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid var(--border);
+      color: var(--text-3);
+    }
+
+    .card-foot {
+      display: flex; align-items: center; justify-content: space-between;
+      padding-top: 14px;
+      border-top: 1px solid var(--border);
+      margin-top: auto;
+    }
+    .card-url {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      color: var(--text-3);
+      transition: color var(--transition);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 78%;
+    }
+    .card:hover .card-url { color: color-mix(in srgb, var(--cc, #c8ff00) 60%, #fff); }
+
+    .card-arrow {
+      width: 26px; height: 26px;
+      border-radius: 50%;
+      background: color-mix(in srgb, var(--cc, #c8ff00) 12%, transparent);
+      border: 1px solid color-mix(in srgb, var(--cc, #c8ff00) 25%, transparent);
+      display: flex; align-items: center; justify-content: center;
+      color: var(--cc, #c8ff00);
+      font-size: 12px;
+      flex-shrink: 0;
+      opacity: 0;
+      transform: translateX(-6px);
+      transition: opacity var(--transition), transform var(--transition);
+    }
+    .card:hover .card-arrow {
+      opacity: 1;
+      transform: translateX(0);
+    }
+
+    /* ── Empty state ── */
+    .empty {
+      grid-column: 1 / -1;
+      text-align: center;
+      padding: 100px 20px;
+    }
+    .empty-icon { font-size: 52px; margin-bottom: 18px; opacity: 0.3; }
+    .empty h3 {
+      font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      font-size: 15px; font-weight: 600;
+      color: var(--text-2); margin-bottom: 10px;
+    }
+    .empty p { font-size: 13px; color: var(--text-3); }
+    .empty a {
+      display: inline-block; margin-top: 20px;
+      color: #c8ff00; text-decoration: none;
+      font-size: 13px;
+      border-bottom: 1px solid rgba(200,255,0,0.3);
+      transition: border-color var(--transition);
+    }
+    .empty a:hover { border-color: #c8ff00; }
+
+    /* ── Animations ── */
+    @keyframes fadeDown {
+      from { opacity: 0; transform: translateY(-10px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(18px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes cardIn {
+      from { opacity: 0; transform: translateY(22px) scale(0.97); }
+      to   { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.35; }
+    }
+
+    /* No-JS fallback */
+    .no-js-msg {
+      text-align: center; padding: 60px 20px;
+      color: var(--text-2);
+    }
+  </style>
+</head>
+<body>
+  <div class="page-glow" id="pageGlow" aria-hidden="true">
+    <div class="page-glow__layer"></div>
+    <div class="page-glow__layer page-glow__layer--core"></div>
+  </div>
+
+  <div class="wrap">
+    <!-- Header -->
+    <header>
+      <a href="/" class="logo" aria-label="首页" title="首页">
+        <span class="logo-mark">
+          <svg width="22" height="22" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+            <defs>
+              <linearGradient id="idxLogoGrad" x1="5" y1="4" x2="27" y2="28" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#eaff8a"/>
+                <stop offset="0.55" stop-color="#7dffc8"/>
+                <stop offset="1" stop-color="#3ad4e8"/>
+              </linearGradient>
+            </defs>
+            <!-- 三层「索引」线 + 底部锚点：象征层层入口与落脚点 -->
+            <path d="M6 22l10-6 10 6" stroke="url(#idxLogoGrad)" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" opacity="0.32"/>
+            <path d="M6 17l10-6 10 6" stroke="url(#idxLogoGrad)" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>
+            <path d="M6 12l10-6 10 6" stroke="url(#idxLogoGrad)" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"/>
+            <circle cx="16" cy="24.5" r="2.35" fill="url(#idxLogoGrad)"/>
+          </svg>
+        </span>
+      </a>
+
+      <div class="header-right">
+        <span class="live-clock" id="clock">00:00:00</span>
+        <button type="button" class="btn-outline" id="btnShare" aria-label="复制当前页面链接" title="复制访问链接">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="18" cy="5" r="3"/>
+            <circle cx="6" cy="12" r="3"/>
+            <circle cx="18" cy="19" r="3"/>
+            <path d="M8.59 13.51l6.83 3.98M15.41 6.51l-6.82 3.98"/>
+          </svg>
+          分享
+        </button>
+        <a href="/admin.html" class="btn-outline">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/>
+          </svg>
+          管理
+        </a>
+      </div>
+    </header>
+
+    <!-- Hero -->
+    <section class="hero">
+      <p class="hero-label" id="heroGreeting">早上好 ✦</p>
+      <h1 class="hero-title">今天<br><span class="dim">想用什么？</span></h1>
+      <p class="hero-sub">快速访问你的所有应用，一切从这里开始。</p>
+    </section>
+
+    <!-- Controls -->
+    <div class="controls">
+      <div class="search-box">
+        <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+        </svg>
+        <input class="search-input" id="searchInput" type="text" placeholder="搜索应用名称、标签…" autocomplete="off" />
+      </div>
+    </div>
+
+    <!-- Cards grid -->
+    <div class="grid" id="grid">
+      <div class="no-js-msg">正在加载服务列表…</div>
+    </div>
+
+  </div>
+
+  <div id="pageToast" role="status" aria-live="polite"></div>
+
+  <script>
+    // ── Clock ─────────────────────────────────────────────────────────────────
+    const clockEl = document.getElementById('clock');
+    const greetingEl = document.getElementById('heroGreeting');
+
+    function greetingText() {
+      const h = new Date().getHours();
+      if (h < 12) return '早上好 ✦';
+      if (h < 18) return '下午好 ✦';
+      return '晚上好 ✦';
+    }
+
+    function tick() {
+      const n = new Date();
+      clockEl.textContent = [n.getHours(), n.getMinutes(), n.getSeconds()]
+        .map(v => String(v).padStart(2, '0')).join(':');
+      if (greetingEl) greetingEl.textContent = greetingText();
+    }
+    tick(); setInterval(tick, 1000);
+
+    document.title = '指引页';
+
+    // ── 全页光晕跟随鼠标 ───────────────────────────────────────────────────────
+    const pageGlow = document.getElementById('pageGlow');
+    function syncGlow(e) {
+      const x = e.clientX + 'px';
+      const y = e.clientY + 'px';
+      pageGlow.style.setProperty('--gx', x);
+      pageGlow.style.setProperty('--gy', y);
+    }
+    document.addEventListener('mousemove', syncGlow, { passive: true });
+    syncGlow({ clientX: window.innerWidth * 0.35, clientY: window.innerHeight * 0.25 });
+
+    // ── 分享：复制当前页网址 ───────────────────────────────────────────────────
+    const pageToast = document.getElementById('pageToast');
+    let toastTimer;
+    function showPageToast(msg) {
+      pageToast.textContent = msg;
+      pageToast.classList.add('show');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => { pageToast.classList.remove('show'); }, 2200);
+    }
+
+    async function copyTextToClipboard(text) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return true;
+      } catch {
+        try {
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          ta.setAttribute('readonly', '');
+          ta.style.position = 'fixed';
+          ta.style.left = '-9999px';
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          return true;
+        } catch {
+          return false;
+        }
+      }
+    }
+
+    async function copyPageUrl() {
+      const ok = await copyTextToClipboard(window.location.href);
+      showPageToast(ok ? '链接已复制到剪贴板' : '复制失败，请手动复制地址栏链接');
+    }
+
+    document.getElementById('btnShare').addEventListener('click', copyPageUrl);
+
+    document.getElementById('grid').addEventListener('click', async (e) => {
+      const btn = e.target.closest('.card-share');
+      if (!btn) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const url = btn.getAttribute('data-copy-url') || '';
+      if (!url) return;
+      const ok = await copyTextToClipboard(url);
+      const name = btn.getAttribute('data-service-name') || '';
+      showPageToast(ok
+        ? (name ? `「${name}」链接已复制` : '链接已复制到剪贴板')
+        : '复制失败，请手动复制链接');
+    });
+
+    // ── Services ──────────────────────────────────────────────────────────────
+    let all = [];
+
+    function cleanUrl(u) {
+      return String(u || '').replace(/^https?:\/\//, '').replace(/\/$/, '');
+    }
+
+    function escAttr(s) {
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+        .replace(/</g, '&lt;');
+    }
+
+    function escHtml(s) {
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
+
+    const shareIconSvg = `
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="18" cy="5" r="3"/>
+        <circle cx="6" cy="12" r="3"/>
+        <circle cx="18" cy="19" r="3"/>
+        <path d="M8.59 13.51l6.83 3.98M15.41 6.51l-6.82 3.98"/>
+      </svg>`;
+
+    function cardHTML(s, idx) {
+      const status   = s.status || 'active';
+      const badgeLabel = status === 'active' ? '运行中' : '停用';
+      const shownUrl = (s.displayUrl && String(s.displayUrl).trim()) || s.url;
+      const tags     = (s.tags || []).map(t => `<span class="tag">${escHtml(t)}</span>`).join('');
+      const delay    = Math.min(idx * 0.08, 0.6);
+      const nameSafe = escHtml(s.name);
+      const descSafe = escHtml(s.description || '');
+      const urlAttr  = escAttr(s.url);
+      const nameAttr = escAttr(s.name);
+
+      return `
+        <div class="card ${status === 'inactive' ? 'inactive' : ''}"
+             style="--cc:${s.color || '#c8ff00'}; animation: cardIn 0.45s ${0.5 + delay}s ease both">
+          <a class="card-hit-area" href="${urlAttr}" target="_blank" rel="noopener noreferrer" aria-label="${escAttr('打开 ' + s.name)}"></a>
+          <div class="card-inner">
+            <div class="card-head">
+              <span class="card-icon-wrap">${s.icon ? s.icon : '◇'}</span>
+              <div class="card-head-actions">
+                <button type="button" class="card-share" data-copy-url="${urlAttr}" data-service-name="${nameAttr}"
+                  aria-label="${escAttr('复制「' + s.name + '」的访问链接')}" title="复制该服务链接">
+                  ${shareIconSvg}
+                </button>
+                <span class="card-badge ${status}">
+                  <span class="badge-dot"></span>${badgeLabel}
+                </span>
+              </div>
+            </div>
+            <div class="card-name">${nameSafe}</div>
+            <div class="card-desc">${descSafe}</div>
+            ${tags ? `<div class="card-tags">${tags}</div>` : ''}
+            <div class="card-foot">
+              <span class="card-url">${cleanUrl(shownUrl)}</span>
+              <span class="card-arrow">→</span>
+            </div>
+          </div>
+        </div>`;
+    }
+
+    function render(list) {
+      const grid = document.getElementById('grid');
+
+      if (!list.length) {
+        grid.innerHTML = `
+          <div class="empty">
+            <div class="empty-icon">🔭</div>
+            <h3>暂无服务</h3>
+            <p>还没有添加任何服务链接。</p>
+            <a href="/admin.html">前往管理后台添加 →</a>
+          </div>`;
+        return;
+      }
+
+      grid.innerHTML = list.map((s, i) => cardHTML(s, i)).join('');
+    }
+
+    // Search
+    document.getElementById('searchInput').addEventListener('input', e => {
+      const q = e.target.value.toLowerCase().trim();
+      render(q ? all.filter(s =>
+        s.name.toLowerCase().includes(q) ||
+        (s.description || '').toLowerCase().includes(q) ||
+        s.url.toLowerCase().includes(q) ||
+        String(s.displayUrl || '').toLowerCase().includes(q) ||
+        (s.tags || []).some(t => t.toLowerCase().includes(q))
+      ) : all);
+    });
+
+    // Load
+    fetch('/api/services')
+      .then(r => r.json())
+      .then(data => { all = data; render(all); })
+      .catch(() => render([]));
+  </script>
+</body>
+</html>

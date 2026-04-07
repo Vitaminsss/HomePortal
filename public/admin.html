@@ -1,0 +1,947 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>指引页 — 管理后台</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;600;700;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #08090e;
+      --surface:  #0d0f16;
+      --surface2: #13151f;
+      --border:   rgba(255,255,255,0.07);
+      --border2:  rgba(255,255,255,0.12);
+      --text:     #f0f0f5;
+      --text2:    #8b8da0;
+      --text3:    #3e4057;
+      --placeholder: rgba(100, 103, 120, 0.42);
+      --accent:   #c8ff00;
+      --green:    #4ade80;
+      --red:      #f87171;
+      --radius:   12px;
+      --tr:       0.22s ease;
+    }
+
+    html, body { height: 100%; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+
+    body::before {
+      content: '';
+      position: fixed; inset: 0; z-index: 0;
+      background-image:
+        linear-gradient(rgba(120,200,255,0.016) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(120,200,255,0.016) 1px, transparent 1px);
+      background-size: 56px 56px;
+      pointer-events: none;
+    }
+
+    /* ═══════════════════════════════ LOGIN GATE ═══════════════════════════ */
+    #loginGate {
+      position: fixed; inset: 0; z-index: 100;
+      display: flex; align-items: center; justify-content: center;
+      background: var(--bg);
+    }
+
+    .login-card {
+      width: 360px;
+      background: var(--surface);
+      border: 1px solid var(--border2);
+      border-radius: 20px;
+      padding: 40px 36px;
+      animation: fadeUp 0.4s ease;
+    }
+
+    .login-logo {
+      display: flex; align-items: center; gap: 10px;
+      margin-bottom: 32px;
+    }
+    .login-logo-mark {
+      width: 36px; height: 36px; border-radius: 11px;
+      background: linear-gradient(145deg, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0.02) 100%);
+      border: 1px solid rgba(255,255,255,0.1);
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.35) inset;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .login-logo span {
+      font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      font-weight: 700; font-size: 15px;
+    }
+
+    .login-title {
+      font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      font-weight: 700; font-size: 22px;
+      letter-spacing: -0.5px;
+      margin-bottom: 6px;
+    }
+    .login-sub {
+      font-size: 13px; color: var(--text2);
+      margin-bottom: 28px;
+    }
+
+    .field { margin-bottom: 14px; }
+    .field label {
+      display: block;
+      font-size: 12px; color: var(--text2);
+      margin-bottom: 6px;
+      font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      letter-spacing: 0.02em;
+    }
+    .field input {
+      width: 100%;
+      padding: 11px 14px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      color: var(--text);
+      font-size: 14px;
+      font-family: inherit;
+      outline: none;
+      transition: border-color var(--tr), box-shadow var(--tr);
+    }
+    .field input::placeholder { color: var(--placeholder); }
+    .field input:focus {
+      border-color: rgba(200,255,0,0.35);
+      box-shadow: 0 0 0 3px rgba(200,255,0,0.07);
+    }
+
+    .btn-primary {
+      width: 100%;
+      padding: 12px;
+      background: var(--accent);
+      border: none; border-radius: 9px;
+      color: #08090e;
+      font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      font-weight: 600; font-size: 14px;
+      cursor: pointer;
+      transition: opacity var(--tr), transform var(--tr);
+      margin-top: 4px;
+    }
+    .btn-primary:hover { opacity: 0.88; }
+    .btn-primary:active { transform: scale(0.98); }
+
+    .login-error {
+      background: rgba(248,113,113,0.1);
+      border: 1px solid rgba(248,113,113,0.2);
+      border-radius: 8px;
+      color: var(--red);
+      font-size: 13px;
+      padding: 10px 14px;
+      margin-bottom: 14px;
+      display: none;
+    }
+    .login-error.show { display: block; }
+
+    /* ═══════════════════════════════ ADMIN PANEL ══════════════════════════ */
+    #adminPanel {
+      display: none;
+      position: relative; z-index: 1;
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 0 28px 60px;
+    }
+
+    /* ── Top bar ── */
+    .topbar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 22px 0 18px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 20px;
+    }
+    .topbar-left { display: flex; align-items: center; gap: 14px; }
+    .topbar-logo {
+      display: flex; align-items: center; gap: 9px;
+      text-decoration: none; color: var(--text);
+    }
+    .topbar-logo-mark {
+      width: 32px; height: 32px; border-radius: 9px;
+      background: linear-gradient(145deg, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0.02) 100%);
+      border: 1px solid rgba(255,255,255,0.1);
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.35) inset;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .topbar-logo-name {
+      font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      font-weight: 700; font-size: 15px;
+    }
+    .topbar-sep {
+      width: 1px; height: 20px;
+      background: var(--border2);
+    }
+    .topbar-title {
+      font-size: 13px; color: var(--text2);
+    }
+
+    .topbar-right { display: flex; align-items: center; gap: 10px; }
+
+    .btn-ghost {
+      display: flex; align-items: center; gap: 6px;
+      padding: 7px 13px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: transparent;
+      color: var(--text2);
+      font-family: inherit;
+      font-size: 13px;
+      cursor: pointer;
+      text-decoration: none;
+      transition: all var(--tr);
+    }
+    .btn-ghost:hover {
+      border-color: var(--border2);
+      color: var(--text);
+    }
+    .btn-logout:hover {
+      border-color: rgba(248,113,113,0.3) !important;
+      color: var(--red) !important;
+      background: rgba(248,113,113,0.06) !important;
+    }
+
+    /* ── Layout: columns ── */
+    .admin-layout {
+      display: grid;
+      grid-template-columns: 1fr 380px;
+      gap: 28px;
+      align-items: start;
+    }
+    @media (max-width: 900px) {
+      .admin-layout { grid-template-columns: 1fr; }
+    }
+
+    /* ── List top bar ── */
+    .list-topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
+    .list-topbar-left {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+    }
+    .btn-new {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 10px 18px;
+      background: var(--accent);
+      color: #08090e;
+      border: none;
+      border-radius: 10px;
+      font-family: inherit;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity var(--tr), transform var(--tr);
+    }
+    .btn-new:hover { opacity: 0.9; }
+    .btn-new:active { transform: scale(0.98); }
+
+    .section-title {
+      font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      font-weight: 600; font-size: 14px;
+      letter-spacing: 0.2px;
+    }
+    .section-count {
+      font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      font-size: 12px; color: var(--text3);
+    }
+
+    /* ── Service list ── */
+    .svc-list { display: flex; flex-direction: column; gap: 8px; }
+
+    .svc-item {
+      display: flex; align-items: center; gap: 12px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      cursor: pointer;
+      transition: border-color var(--tr), background var(--tr);
+    }
+    .svc-item:hover { border-color: var(--border2); background: var(--surface2); }
+    .svc-item:focus-visible {
+      outline: 2px solid rgba(200,255,0,0.35);
+      outline-offset: 2px;
+    }
+
+    .svc-color-bar {
+      width: 3px; height: 40px; border-radius: 3px;
+      flex-shrink: 0;
+    }
+
+    .svc-icon { font-size: 22px; flex-shrink: 0; width: 36px; text-align: center; }
+
+    .svc-info { flex: 1; overflow: hidden; }
+    .svc-name {
+      font-weight: 500; font-size: 14px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .svc-url {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px; color: var(--text2);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      margin-top: 2px;
+    }
+
+    .svc-status-badge {
+      font-size: 11px;
+      font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      padding: 2px 7px; border-radius: 20px;
+      flex-shrink: 0;
+    }
+    .svc-status-badge.active {
+      color: var(--green);
+      background: rgba(74,222,128,0.08);
+      border: 1px solid rgba(74,222,128,0.15);
+    }
+    .svc-status-badge.inactive {
+      color: var(--text3);
+      background: transparent;
+      border: 1px solid var(--border);
+    }
+
+    .svc-actions {
+      display: flex; align-items: center; gap: 6px;
+      flex-shrink: 0;
+    }
+
+    .order-btns { display: flex; flex-direction: column; gap: 2px; }
+
+    .icon-btn {
+      width: 30px; height: 30px;
+      border-radius: 7px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text2);
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer;
+      transition: all var(--tr);
+      font-size: 13px;
+    }
+    .icon-btn:hover { border-color: var(--border2); color: var(--text); background: var(--surface2); }
+    .icon-btn.del:hover  { border-color: rgba(248,113,113,0.3); color: var(--red); background: rgba(248,113,113,0.06); }
+
+    .order-btn {
+      width: 22px; height: 22px;
+      border-radius: 5px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text3);
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer;
+      font-size: 10px;
+      transition: all var(--tr);
+    }
+    .order-btn:hover { border-color: var(--border2); color: var(--text2); }
+
+    .svc-empty {
+      text-align: center; padding: 60px 20px;
+      color: var(--text3);
+    }
+    .svc-empty-icon { font-size: 36px; margin-bottom: 12px; opacity: 0.4; }
+    .svc-empty p { font-size: 13px; }
+
+    /* ── Form panel ── */
+    .form-panel {
+      background: var(--surface);
+      border: 1px solid var(--border2);
+      border-radius: 16px;
+      padding: 28px 24px;
+      position: sticky; top: 28px;
+    }
+
+    .form-title {
+      font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      font-weight: 600; font-size: 15px;
+      margin-bottom: 22px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .form-title-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 8px var(--accent);
+    }
+
+    .form-field { margin-bottom: 14px; }
+    .form-label {
+      display: block;
+      font-size: 12px; color: var(--text2);
+      margin-bottom: 6px;
+      font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      letter-spacing: 0.02em;
+    }
+    .form-required { color: var(--accent); margin-left: 2px; }
+
+    .form-input,
+    .form-select,
+    .form-textarea {
+      width: 100%;
+      padding: 10px 12px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 13.5px;
+      font-family: inherit;
+      outline: none;
+      transition: border-color var(--tr), box-shadow var(--tr);
+    }
+    .form-input::placeholder,
+    .form-textarea::placeholder { color: var(--placeholder); }
+    .form-input:focus, .form-select:focus, .form-textarea:focus {
+      border-color: rgba(200,255,0,0.3);
+      box-shadow: 0 0 0 3px rgba(200,255,0,0.06);
+    }
+    .form-select {
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238b8da0' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 12px center;
+      padding-right: 34px;
+      cursor: pointer;
+    }
+    .form-select option { background: #13151f; }
+    .form-textarea { resize: vertical; min-height: 72px; line-height: 1.5; }
+
+    /* Color + emoji row */
+    .form-row { display: grid; grid-template-columns: 1fr 80px; gap: 10px; }
+    .form-color-wrap { position: relative; }
+    .form-color-preview {
+      width: 100%;
+      padding: 10px 12px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      display: flex; align-items: center; gap: 8px;
+      cursor: pointer;
+      transition: border-color var(--tr);
+      font-size: 13.5px; color: var(--text);
+    }
+    .form-color-preview:hover { border-color: var(--border2); }
+    .color-swatch {
+      width: 18px; height: 18px; border-radius: 4px;
+      flex-shrink: 0; border: 1px solid rgba(255,255,255,0.1);
+    }
+    input[type="color"] {
+      position: absolute; width: 0; height: 0; opacity: 0; border: none;
+    }
+    .emoji-input {
+      text-align: center; font-size: 20px; padding: 6px 4px;
+    }
+
+    .form-hint {
+      font-size: 11px; color: var(--text3);
+      margin-top: 5px;
+      font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    }
+
+    .form-actions {
+      display: flex; gap: 8px; margin-top: 20px;
+    }
+    .btn-submit {
+      flex: 1;
+      padding: 11px;
+      background: var(--accent);
+      border: none; border-radius: 8px;
+      color: #08090e;
+      font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      font-weight: 600; font-size: 13px;
+      cursor: pointer;
+      transition: opacity var(--tr), transform var(--tr);
+    }
+    .btn-submit:hover { opacity: 0.88; }
+    .btn-submit:active { transform: scale(0.98); }
+
+    .btn-cancel {
+      padding: 11px 16px;
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text2);
+      font-family: inherit;
+      font-size: 13px;
+      cursor: pointer;
+      transition: all var(--tr);
+      display: none;
+    }
+    .btn-cancel:hover { border-color: var(--border2); color: var(--text); }
+    .btn-cancel.show { display: block; }
+
+    /* ── Toast ── */
+    #toast {
+      position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);
+      padding: 12px 20px;
+      border-radius: 10px;
+      font-size: 13px; font-weight: 500;
+      z-index: 200;
+      opacity: 0; pointer-events: none;
+      transition: opacity 0.3s ease, transform 0.3s ease;
+      transform: translateX(-50%) translateY(8px);
+      white-space: nowrap;
+    }
+    #toast.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+    #toast.success {
+      background: rgba(74,222,128,0.12);
+      border: 1px solid rgba(74,222,128,0.25);
+      color: var(--green);
+    }
+    #toast.error {
+      background: rgba(248,113,113,0.12);
+      border: 1px solid rgba(248,113,113,0.25);
+      color: var(--red);
+    }
+
+    /* ── Animations ── */
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(16px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes itemIn {
+      from { opacity: 0; transform: translateX(-8px); }
+      to   { opacity: 1; transform: translateX(0); }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ═══════════ LOGIN ═══════════ -->
+  <div id="loginGate">
+    <div class="login-card">
+      <div class="login-logo">
+        <span class="login-logo-mark">
+          <svg width="20" height="20" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+            <defs>
+              <linearGradient id="admLoginLogoGrad" x1="5" y1="4" x2="27" y2="28" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#eaff8a"/>
+                <stop offset="0.55" stop-color="#7dffc8"/>
+                <stop offset="1" stop-color="#3ad4e8"/>
+              </linearGradient>
+            </defs>
+            <path d="M6 22l10-6 10 6" stroke="url(#admLoginLogoGrad)" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" opacity="0.32"/>
+            <path d="M6 17l10-6 10 6" stroke="url(#admLoginLogoGrad)" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>
+            <path d="M6 12l10-6 10 6" stroke="url(#admLoginLogoGrad)" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"/>
+            <circle cx="16" cy="24.5" r="2.35" fill="url(#admLoginLogoGrad)"/>
+          </svg>
+        </span>
+        <span id="loginPortalTitle">指引页</span>
+      </div>
+
+      <h2 class="login-title">管理后台</h2>
+      <p class="login-sub">请输入管理员密码继续</p>
+
+      <div class="login-error" id="loginErr">密码错误，请重试</div>
+
+      <div class="field">
+        <label>管理密码</label>
+        <input type="password" id="pwdInput" placeholder="输入密码…" autocomplete="current-password" />
+      </div>
+
+      <button class="btn-primary" id="loginBtn">进入管理后台 →</button>
+    </div>
+  </div>
+
+  <!-- ═══════════ ADMIN PANEL ═══════════ -->
+  <div id="adminPanel">
+    <!-- Top bar -->
+    <div class="topbar">
+      <div class="topbar-left">
+        <a href="/" class="topbar-logo">
+          <span class="topbar-logo-mark">
+            <svg width="18" height="18" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+              <defs>
+                <linearGradient id="admTopLogoGrad" x1="5" y1="4" x2="27" y2="28" gradientUnits="userSpaceOnUse">
+                  <stop stop-color="#eaff8a"/>
+                  <stop offset="0.55" stop-color="#7dffc8"/>
+                  <stop offset="1" stop-color="#3ad4e8"/>
+                </linearGradient>
+              </defs>
+              <path d="M6 22l10-6 10 6" stroke="url(#admTopLogoGrad)" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" opacity="0.32"/>
+              <path d="M6 17l10-6 10 6" stroke="url(#admTopLogoGrad)" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>
+              <path d="M6 12l10-6 10 6" stroke="url(#admTopLogoGrad)" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"/>
+              <circle cx="16" cy="24.5" r="2.35" fill="url(#admTopLogoGrad)"/>
+            </svg>
+          </span>
+          <span class="topbar-logo-name" id="panelTitle">指引页</span>
+        </a>
+        <span class="topbar-sep"></span>
+        <span class="topbar-title">管理后台</span>
+      </div>
+      <div class="topbar-right">
+        <a href="/" class="btn-ghost">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+            <polyline points="9 22 9 12 15 12 15 22"/>
+          </svg>
+          返回首页
+        </a>
+        <button class="btn-ghost btn-logout" id="logoutBtn">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+            <polyline points="16 17 21 12 16 7"/>
+            <line x1="21" y1="12" x2="9" y2="12"/>
+          </svg>
+          退出
+        </button>
+      </div>
+    </div>
+
+    <!-- Main layout -->
+    <div class="admin-layout">
+      <!-- Left: service list -->
+      <div>
+        <div class="list-topbar">
+          <div class="list-topbar-left">
+            <span class="section-title">服务列表</span>
+            <span class="section-count" id="listCount">共 0 个</span>
+          </div>
+          <button type="button" class="btn-new" id="btnNewSvc">＋ 新增服务</button>
+        </div>
+        <div class="svc-list" id="svcList">
+          <div class="svc-empty">
+            <div class="svc-empty-icon">📭</div>
+            <p>暂无服务，点击「新增服务」或右侧表单添加</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right: form -->
+      <div>
+        <div class="form-panel">
+          <div class="form-title">
+            <span class="form-title-dot"></span>
+            <span id="formHeading">添加服务</span>
+          </div>
+
+          <input type="hidden" id="editId" />
+
+          <div class="form-field">
+            <label class="form-label">名称<span class="form-required">*</span></label>
+            <input class="form-input" id="fName" type="text" placeholder="例如：我的网盘" />
+          </div>
+
+          <div class="form-field">
+            <label class="form-label">访问地址<span class="form-required">*</span></label>
+            <input class="form-input" id="fUrl" type="url" placeholder="https://你的域名或内网地址" />
+          </div>
+
+          <div class="form-field">
+            <label class="form-label">对外显示地址 <small style="font-weight:400;color:var(--text3)">（选填，留空则使用上方地址）</small></label>
+            <input class="form-input" id="fDisplayUrl" type="text" placeholder="给访客看的域名，如 app.example.com" />
+          </div>
+
+          <div class="form-field">
+            <label class="form-label">描述</label>
+            <textarea class="form-textarea" id="fDesc" placeholder="一句话说明这个入口是做什么的（选填）"></textarea>
+          </div>
+
+          <div class="form-row">
+            <div class="form-field">
+              <label class="form-label">主题颜色</label>
+              <div class="form-color-wrap">
+                <div class="form-color-preview" id="colorPreview" onclick="document.getElementById('colorPicker').click()">
+                  <span class="color-swatch" id="colorSwatch"></span>
+                  <span id="colorHex">#c8ff00</span>
+                </div>
+                <input type="color" id="colorPicker" value="#c8ff00" />
+              </div>
+            </div>
+            <div class="form-field">
+              <label class="form-label">图标 <small style="font-weight:400;color:var(--text3)">（选填）</small></label>
+              <input class="form-input emoji-input" id="fIcon" type="text" maxlength="8" placeholder="可选，如 📦" />
+            </div>
+          </div>
+
+          <div class="form-field">
+            <label class="form-label">标签</label>
+            <input class="form-input" id="fTags" type="text" placeholder="工作, 工具" />
+            <p class="form-hint">用逗号分隔</p>
+          </div>
+
+          <div class="form-field">
+            <label class="form-label">状态</label>
+            <select class="form-select" id="fStatus">
+              <option value="active">● 运行中 — 正常显示</option>
+              <option value="inactive">○ 停用 — 灰显不可点</option>
+            </select>
+          </div>
+
+          <div class="form-actions">
+            <button class="btn-submit" id="submitBtn">添加服务</button>
+            <button class="btn-cancel" id="cancelBtn">取消</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast"></div>
+
+  <script>
+    // ── State ─────────────────────────────────────────────────────────────────
+    let token = sessionStorage.getItem('portal_token') || '';
+    let services = [];
+    let editingId = null;
+
+    // ── Utilities ─────────────────────────────────────────────────────────────
+    function toast(msg, type = 'success') {
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.className = `show ${type}`;
+      clearTimeout(el._t);
+      el._t = setTimeout(() => { el.className = ''; }, 3000);
+    }
+
+    function api(method, path, body) {
+      return fetch(path, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: body ? JSON.stringify(body) : undefined,
+      }).then(r => r.json());
+    }
+
+    // ── Color picker ──────────────────────────────────────────────────────────
+    const colorPicker  = document.getElementById('colorPicker');
+    const colorSwatch  = document.getElementById('colorSwatch');
+    const colorHexEl   = document.getElementById('colorHex');
+
+    function setColor(hex) {
+      colorPicker.value = hex;
+      colorSwatch.style.background = hex;
+      colorHexEl.textContent = hex;
+    }
+    setColor('#c8ff00');
+    colorPicker.addEventListener('input', () => setColor(colorPicker.value));
+
+    // ── Portal title ──────────────────────────────────────────────────────────
+    fetch('/api/config').then(r => r.json()).then(cfg => {
+      if (cfg.title) {
+        ['loginPortalTitle', 'panelTitle'].forEach(id => {
+          document.getElementById(id).textContent = cfg.title;
+        });
+      }
+    }).catch(() => {});
+
+    // ── Login ─────────────────────────────────────────────────────────────────
+    async function tryLogin() {
+      const pwd = document.getElementById('pwdInput').value.trim();
+      if (!pwd) return;
+
+      const data = await api('POST', '/api/auth', { password: pwd });
+      if (data.token) {
+        token = data.token;
+        sessionStorage.setItem('portal_token', token);
+        document.getElementById('loginErr').classList.remove('show');
+        showAdmin();
+      } else {
+        document.getElementById('loginErr').classList.add('show');
+        document.getElementById('pwdInput').value = '';
+        document.getElementById('pwdInput').focus();
+      }
+    }
+
+    document.getElementById('loginBtn').addEventListener('click', tryLogin);
+    document.getElementById('pwdInput').addEventListener('keydown', e => {
+      if (e.key === 'Enter') tryLogin();
+    });
+
+    // ── Show admin panel ───────────────────────────────────────────────────────
+    function showAdmin() {
+      document.getElementById('loginGate').style.display = 'none';
+      document.getElementById('adminPanel').style.display = 'block';
+      loadServices();
+    }
+
+    // If token exists, skip login
+    if (token) {
+      api('GET', '/api/services').then(data => {
+        if (!data.error) showAdmin();
+        else { token = ''; sessionStorage.removeItem('portal_token'); }
+      }).catch(() => {});
+    }
+
+    // ── Logout ────────────────────────────────────────────────────────────────
+    document.getElementById('logoutBtn').addEventListener('click', () => {
+      if (!confirm('确定要退出管理后台吗？退出后需要重新输入密码登录。')) return;
+      token = ''; sessionStorage.removeItem('portal_token');
+      document.getElementById('loginGate').style.display = 'flex';
+      document.getElementById('adminPanel').style.display = 'none';
+    });
+
+    // ── Load & render services ────────────────────────────────────────────────
+    async function loadServices() {
+      const data = await api('GET', '/api/services');
+      services = Array.isArray(data) ? data : [];
+      renderList();
+    }
+
+    function renderList() {
+      const list = document.getElementById('svcList');
+      document.getElementById('listCount').textContent = `共 ${services.length} 个`;
+
+      if (!services.length) {
+        list.innerHTML = `
+          <div class="svc-empty">
+            <div class="svc-empty-icon">📭</div>
+            <p>暂无服务，在右侧表单添加</p>
+          </div>`;
+        return;
+      }
+
+      list.innerHTML = services.map((s, i) => `
+        <div class="svc-item" role="button" tabindex="0" style="animation: itemIn 0.3s ${i * 0.05}s ease both"
+             onclick="startEdit('${s.id}')"
+             onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();startEdit('${s.id}');}">
+          <span class="svc-color-bar" style="background:${s.color || '#c8ff00'}"></span>
+          <span class="svc-icon">${s.icon ? s.icon : '◇'}</span>
+          <div class="svc-info">
+            <div class="svc-name">${s.name}</div>
+            <div class="svc-url">${(s.displayUrl && String(s.displayUrl).trim()) || s.url}</div>
+          </div>
+          <span class="svc-status-badge ${s.status || 'active'}">${s.status === 'inactive' ? '停用' : '运行中'}</span>
+          <div class="svc-actions" onclick="event.stopPropagation()">
+            <div class="order-btns">
+              <button type="button" class="order-btn" onclick="event.stopPropagation(); moveUp('${s.id}')" title="上移">▲</button>
+              <button type="button" class="order-btn" onclick="event.stopPropagation(); moveDown('${s.id}')" title="下移">▼</button>
+            </div>
+            <button type="button" class="icon-btn del" onclick="event.stopPropagation(); deleteSvc('${s.id}')" title="删除">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+                <path d="M10 11v6m4-6v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    // ── Form helpers ──────────────────────────────────────────────────────────
+    function resetForm() {
+      editingId = null;
+      document.getElementById('editId').value = '';
+      document.getElementById('fName').value = '';
+      document.getElementById('fUrl').value = '';
+      document.getElementById('fDisplayUrl').value = '';
+      document.getElementById('fDesc').value = '';
+      document.getElementById('fIcon').value = '';
+      document.getElementById('fTags').value = '';
+      document.getElementById('fStatus').value = 'active';
+      setColor('#c8ff00');
+      document.getElementById('formHeading').textContent = '添加服务';
+      document.getElementById('submitBtn').textContent = '添加服务';
+      document.getElementById('cancelBtn').classList.remove('show');
+    }
+
+    function startEdit(id) {
+      const s = services.find(x => x.id === id);
+      if (!s) return;
+      editingId = id;
+      document.getElementById('editId').value = id;
+      document.getElementById('fName').value = s.name;
+      document.getElementById('fUrl').value = s.url;
+      document.getElementById('fDisplayUrl').value = s.displayUrl || '';
+      document.getElementById('fDesc').value = s.description || '';
+      document.getElementById('fIcon').value = s.icon || '';
+      document.getElementById('fTags').value = (s.tags || []).join(', ');
+      document.getElementById('fStatus').value = s.status || 'active';
+      setColor(s.color || '#c8ff00');
+      document.getElementById('formHeading').textContent = '编辑服务';
+      document.getElementById('submitBtn').textContent = '保存修改';
+      document.getElementById('cancelBtn').classList.add('show');
+      // Scroll form into view on mobile
+      document.querySelector('.form-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    document.getElementById('cancelBtn').addEventListener('click', resetForm);
+
+    document.getElementById('btnNewSvc').addEventListener('click', () => {
+      resetForm();
+      document.querySelector('.form-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+
+    // ── Submit ────────────────────────────────────────────────────────────────
+    document.getElementById('submitBtn').addEventListener('click', async () => {
+      const name = document.getElementById('fName').value.trim();
+      const url  = document.getElementById('fUrl').value.trim();
+      if (!name || !url) { toast('名称和地址为必填项', 'error'); return; }
+
+      const body = {
+        name,
+        url,
+        displayUrl:  document.getElementById('fDisplayUrl').value.trim(),
+        description: document.getElementById('fDesc').value.trim(),
+        icon:        document.getElementById('fIcon').value.trim(),
+        color:       colorPicker.value,
+        tags:        document.getElementById('fTags').value.split(/[,，]/).map(t => t.trim()).filter(Boolean),
+        status:      document.getElementById('fStatus').value,
+      };
+
+      let data;
+      if (editingId) {
+        data = await api('PUT', `/api/services/${editingId}`, body);
+      } else {
+        data = await api('POST', '/api/services', body);
+      }
+
+      if (data.error) { toast(data.error, 'error'); return; }
+
+      toast(editingId ? `"${data.name}" 已更新` : `"${data.name}" 已添加`);
+      resetForm();
+      loadServices();
+    });
+
+    // ── Delete ────────────────────────────────────────────────────────────────
+    async function deleteSvc(id) {
+      const s = services.find(x => x.id === id);
+      const name = s ? s.name : '';
+      if (!confirm(name ? `确认删除「${name}」？` : '确认删除？')) return;
+      const data = await api('DELETE', `/api/services/${id}`);
+      if (data.error) { toast(data.error, 'error'); return; }
+      toast(name ? `「${name}」已删除` : '已删除');
+      if (editingId === id) resetForm();
+      loadServices();
+    }
+
+    // ── Reorder ───────────────────────────────────────────────────────────────
+    function moveUp(id) {
+      const idx = services.findIndex(s => s.id === id);
+      if (idx <= 0) return;
+      [services[idx - 1], services[idx]] = [services[idx], services[idx - 1]];
+      services.forEach((s, i) => s.order = i);
+      renderList();
+      api('PUT', '/api/reorder', { ids: services.map(s => s.id) });
+    }
+
+    function moveDown(id) {
+      const idx = services.findIndex(s => s.id === id);
+      if (idx >= services.length - 1) return;
+      [services[idx], services[idx + 1]] = [services[idx + 1], services[idx]];
+      services.forEach((s, i) => s.order = i);
+      renderList();
+      api('PUT', '/api/reorder', { ids: services.map(s => s.id) });
+    }
+  </script>
+</body>
+</html>
