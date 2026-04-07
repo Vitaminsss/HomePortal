@@ -6,7 +6,7 @@
 #
 # 首次运行：交互设置管理员密码（默认 rainy）、生成 JWT、写 .env
 # 非首次：跳过密码向导，更新依赖并刷新 systemd / Nginx
-# 开头：若已有同名 systemd / PM2 进程则先停止；结尾：✅/❌ 汇总
+# 开头：若已有同名 systemd / PM2 则先停止；结尾：✅/❌ 汇总；不自动 ufw；Node 默认 LISTEN_HOST=127.0.0.1
 # ============================================
 set -euo pipefail
 
@@ -83,6 +83,7 @@ if [ ! -f "$MARKER" ]; then
 
   {
     echo "PORT=$PORT_VALUE"
+    echo "LISTEN_HOST=127.0.0.1"
     printf 'ADMIN_PASSWORD=%q\n' "$HPWD"
     echo "JWT_SECRET=$JWT_SECRET_VALUE"
     echo "PORTAL_TITLE=指引页"
@@ -119,6 +120,13 @@ APP_PORT="${APP_PORT//\'/}"
 APP_PORT="${APP_PORT//$'\r'/}"
 APP_PORT="${APP_PORT:-3000}"
 
+# 旧 .env 无 LISTEN_HOST 时补全，与 server 默认仅监听本机一致
+if [ -f "$INSTALL_DIR/.env" ] && ! grep -qE '^[[:space:]]*LISTEN_HOST=' "$INSTALL_DIR/.env" 2>/dev/null; then
+  echo "LISTEN_HOST=127.0.0.1" >> "$INSTALL_DIR/.env"
+  chown "$RUN_USER:$RUN_USER" "$INSTALL_DIR/.env" 2>/dev/null || true
+  chmod 600 "$INSTALL_DIR/.env" 2>/dev/null || true
+fi
+
 UNIT="/etc/systemd/system/${SERVICE_NAME}.service"
 
 tee "$UNIT" > /dev/null <<SYSTEMD
@@ -152,7 +160,7 @@ systemctl restart "$SERVICE_NAME"
 SYSTEMD_OK=0
 systemctl is-active --quiet "$SERVICE_NAME" && SYSTEMD_OK=1
 
-echo "systemd: 已启用并启动 $SERVICE_NAME（开机自启）"
+echo "▸ systemd：已启用并启动 $SERVICE_NAME（监听 127.0.0.1:${APP_PORT}，开机自启）"
 
 # ---------- Nginx ----------
 NGINX_RELOAD_OK=0
@@ -217,7 +225,7 @@ NGINX
   if nginx -t; then
     systemctl reload nginx 2>/dev/null || service nginx reload 2>/dev/null || true
     NGINX_RELOAD_OK=1
-    echo "Nginx: server_name ${HOMEPORTAL_SRV_NAME} · 反代 80 -> 127.0.0.1:${APP_PORT}（已 reload）"
+    echo "▸ Nginx：server_name ${HOMEPORTAL_SRV_NAME} · 80 → 127.0.0.1:${APP_PORT}（已 reload）"
     if [ "$OTHER_HAS_DEFAULT" -eq 1 ]; then
       echo ""
       echo "提示: 检测到本机已有站点使用 default_server（例如 release-hub）。"
@@ -235,46 +243,44 @@ else
   echo "  sudo bash $(basename "$0")"
 fi
 
-# 不自动 ufw allow：与 Release Hub 一致，避免脚本擅自对外开放端口（见文末防火墙说明）。
-
 echo ""
 echo "──────── 部署结果 ────────"
 if [ "${SYSTEMD_OK:-0}" -eq 1 ]; then
-  echo "✅ systemd：服务「$SERVICE_NAME」已运行（127.0.0.1:${APP_PORT}）"
+  echo "✅ systemd：「$SERVICE_NAME」已运行（监听 127.0.0.1:${APP_PORT}，不对公网暴露）"
 else
-  echo "❌ systemd：服务未处于 active，请执行: systemctl status $SERVICE_NAME"
+  echo "❌ systemd：服务未 active，请执行: systemctl status $SERVICE_NAME"
 fi
 
 if [ "${NGINX_NOT_INSTALLED:-0}" -eq 1 ]; then
-  echo "❌ Nginx：未安装，当前仅可直连 Node 端口"
+  echo "❌ Nginx：未安装；仅能通过 127.0.0.1:${APP_PORT} 本机访问，公网请装 Nginx 后再放行 80"
 elif [ "${NGINX_RELOAD_OK:-0}" -eq 1 ]; then
-  echo "✅ Nginx：反代已配置并 reload（server_name ${HOMEPORTAL_SRV_NAME}）"
+  echo "✅ Nginx：反代已 reload（server_name ${HOMEPORTAL_SRV_NAME}）"
 else
   if command -v nginx &>/dev/null; then
-    echo "❌ Nginx：配置未通过 nginx -t 或未 reload，请检查: $NGINX_SITE"
+    echo "❌ Nginx：nginx -t 失败或未 reload，请检查: $NGINX_SITE"
   else
-    echo "❌ Nginx：异常"
+    echo "❌ Nginx：状态异常"
   fi
 fi
 
-[ -f "$INSTALL_DIR/.env" ] && echo "✅ 配置：$INSTALL_DIR/.env 已就绪" || echo "❌ 配置：缺少 $INSTALL_DIR/.env"
+[ -f "$INSTALL_DIR/.env" ] && echo "✅ 配置：$INSTALL_DIR/.env（含 LISTEN_HOST）" || echo "❌ 配置：缺少 $INSTALL_DIR/.env"
 
-echo "⚠ 防火墙：脚本不会自动执行 ufw，避免擅自对外开放端口；请在云安全组或本机 ufw 按需手动放行（见下「温馨提醒」）。"
+echo "⚠ 防火墙：脚本不执行 ufw；公网一般只放行 80，勿映射 ${APP_PORT} 到公网。"
 
 echo ""
 echo "访问与路径"
 echo "────────────────────────────────────────"
-printf "  %-16s %s\n" "首页（直连）" "http://127.0.0.1:${APP_PORT}/"
-printf "  %-16s %s\n" "管理后台" "http://127.0.0.1:${APP_PORT}/admin.html"
+printf "  %-16s %s\n" "本机首页" "http://127.0.0.1:${APP_PORT}/"
+printf "  %-16s %s\n" "本机后台" "http://127.0.0.1:${APP_PORT}/admin.html"
 if [ "${NGINX_RELOAD_OK:-0}" -eq 1 ]; then
-  printf "  %-16s %s\n" "经 Nginx:80" "http://127.0.0.1/（视 default_server 与同机站点而定）"
+  printf "  %-16s %s\n" "经 Nginx:80" "视 default_server 而定；同机多站时可能非本站"
 fi
+printf "  %-16s %s\n" "本机排障" "SSH 后: curl -sI http://127.0.0.1:${APP_PORT}/"
 
 echo ""
 echo "💡 温馨提醒"
-echo "  · 默认密码为 rainy，登录后台后请尽快修改为强密码。"
-echo "  · 修改密码或 JWT：编辑 $INSTALL_DIR/.env 后执行 sudo systemctl restart $SERVICE_NAME"
-echo "  · 与同机 Release Hub 并存时，若未占 default_server，用 IP:80 可能先到其他站点；可用 127.0.0.1:${APP_PORT} 或合并 Nginx server。"
-echo "  · 防火墙：已配置 Nginx 反代时，公网一般只需放行 80；请勿把应用端口 ${APP_PORT} 对公网暴露（由 Nginx 反代到 127.0.0.1）。无 Nginx 时需外网直连再单独评估是否放行 ${APP_PORT}。"
-echo "  · 常用：systemctl status $SERVICE_NAME · journalctl -u $SERVICE_NAME -f · 再次部署可重复执行本脚本。"
+echo "  · 默认密码 rainy，登录后请改为强密码；JWT/密码见 $INSTALL_DIR/.env"
+echo "  · 勿将 LISTEN_HOST 改为 0.0.0.0 除非清楚风险；生产环境应仅 127.0.0.1 + Nginx。"
+echo "  · 与同机 Release Hub 并存且未占 default_server 时，公网 IP:80 可能先到其他站点。"
+echo "  · 常用：systemctl status $SERVICE_NAME · journalctl -u $SERVICE_NAME -f · sudo systemctl restart $SERVICE_NAME"
 echo ""

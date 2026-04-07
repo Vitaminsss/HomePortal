@@ -7,7 +7,9 @@ const jwt     = require('jsonwebtoken');
 const cors    = require('cors');
 
 const app  = express();
-const PORT = process.env.PORT || 3000;
+const PORT = parseInt(process.env.PORT, 10) || 3000;
+// 生产环境建议 127.0.0.1 + Nginx 反代；局域网调试可设 LISTEN_HOST=0.0.0.0
+const LISTEN_HOST = process.env.LISTEN_HOST || '127.0.0.1';
 
 const DATA_FILE      = path.join(__dirname, 'data', 'services.json');
 const JWT_SECRET     = process.env.JWT_SECRET     || 'homeportal-secret-change-me';
@@ -148,8 +150,8 @@ app.put('/api/reorder', auth, (req, res) => {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 
-app.listen(PORT, () => {
-  console.log(`\n  🌐 HomePortal  →  http://localhost:${PORT}`);
-  console.log(`  🔧 Admin Panel →  http://localhost:${PORT}/admin.html`);
+app.listen(PORT, LISTEN_HOST, () => {
+  console.log(`\n  🌐 HomePortal  →  http://${LISTEN_HOST}:${PORT}`);
+  console.log(`  🔧 Admin Panel →  http://${LISTEN_HOST}:${PORT}/admin.html`);
   console.log(`  📁 Data file   →  ${DATA_FILE}\n`);
 });
