@@ -38,7 +38,7 @@ sudo bash deploy.sh
 1. **首次运行**：提示设置管理员密码；**默认密码为 `rainy`**，直接回车即采用；并自动生成 `JWT_SECRET`、写入 `.env`、创建标记文件 `.homeportal-deploy-init`（仅首次出现向导）。
 2. **非首次**：跳过密码向导，执行 **`pnpm install --prod`**、刷新 systemd 与 Nginx。
 3. 注册并启用 **`home-portal`** systemd 服务（**开机自启**）。
-4. 若已安装 **Nginx**：写入 `sites-available/home-portal`，将 **80 端口**反代到本服务监听端口（默认 `3000`），并禁用默认 `default` 站点（若存在）以避免与 `default_server` 冲突。
+4. 若已安装 **Nginx**：写入 `sites-available/home-portal`，将 **80 端口**反代到本服务监听端口（默认 `3000`）。脚本会扫描 `sites-enabled` 中是否已有 **`default_server`**：若无则为本站加上；若有则**列出文件**并询问是否从其他站点移除 `default_server` 后由 HomePortal 接管。**非交互**（如 CI）可设环境变量 **`HOMEPORTAL_DEFAULT_SERVER=replace`** 表示接管，**`=keep`**（默认）表示不改动他站。HTTPS（`:443`）与证书仍可能由 Certbot 等单独配置，若用域名访问仍不对，请检查 `:443` 的 `server_name` 与证书域名是否一致。
 
 **二次修改密码或 JWT**：编辑安装目录下的 `.env`，然后执行：
 
@@ -50,7 +50,7 @@ sudo systemctl restart home-portal
 
 若未安装 Nginx，脚本会提示安装命令；安装后再次执行 `sudo bash deploy.sh` 即可生成反代配置。
 
-**与同机 Release Hub 共存**：若 `/etc/nginx/sites-enabled/` 里已有站点（如 `release-hub`）使用 `default_server`，脚本会为 HomePortal **省略** `default_server`，避免 `duplicate default server for 0.0.0.0:80`。此时用公网 IP 访问 80 端口仍由先占用 `default_server` 的站点响应；HomePortal 可直接访问 `http://127.0.0.1:3000/`（或你在 `.env` 里设的 `PORT`），或自行把两个服务合并进**同一** `server { }` 的不同 `location`。
+**与同机多站共存**：若他站已占用 `default_server`，部署时可选择是否让 HomePortal 接管（脚本会备份并从他站配置中去掉 `default_server`）。若未接管，请用 **`HOMEPORTAL_SERVER_NAME=你的域名`** 部署（或事后改 Nginx 的 `server_name`），使浏览器请求的 Host 与之一致；否则公网 IP 或未匹配的 Host 可能仍落到其他站点。本机直连仍可用 `http://127.0.0.1:3000/`（或 `.env` 中的 `PORT`）。
 
 ## 与 Nginx 集成（手动示例）
 
