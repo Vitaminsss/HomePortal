@@ -1,32 +1,41 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # ============================================
 # HomePortal — Linux 一键部署
 # 用法：在 HomePortal 目录执行
 #   sudo bash deploy.sh
 #
-# 首次运行：交互设置管理员密码（默认 rainy）、生成 JWT、写 .env
-# 非首次：跳过密码向导，更新依赖并刷新 systemd / Nginx
-# 依赖：Node.js；脚本内 ensure_pnpm（corepack / npm -g）
-# Nginx：多站并存 — 不使用 default_server；须配置明确的 server_name（HOMEPORTAL_SERVER_NAME / 交互）
-#   UNIFIED_NGINX=1  与 Release Hub 等同域名不同路径：片段 unified.d/20-home-portal.conf，共用 unified-apps.conf
-#   UNIFIED_SERVER_NAME、HOMEPORTAL_NGINX_PREFIX（默认 home）→ 对外 https://域名/home/
-#   可选：HOMEPORTAL_FORCE_DEFAULT_SERVER=1 时仍尝试接管 default（不推荐多站环境）
-# 域名：部署前（pnpm 之前）交互询问是否有公网域名；HOMEPORTAL_SERVER_NAME 写入 .env；HTTPS 若存在 Let's Encrypt 则写 :443
-# 开头：停同名 systemd/PM2；结尾 ✅/❌；不自动 ufw；LISTEN_HOST=127.0.0.1
+# 安装目录 = 本脚本所在目录（与 server.js 同级）
+#
+# Nginx：默认安装；关闭：USE_NGINX=0 或 SKIP_NGINX=1
+#   DOMAIN         公网域名（如 www.example.com）；未设置时尝试 hostname -f
+#   USE_HTTPS=0    不尝试 HTTPS（仅 HTTP）
+#   CERTBOT_EMAIL  可选邮箱；默认 admin@域名
+#
+# 主 Nginx：/etc/nginx/conf.d/<根域标签>.conf（由域名倒数第二段命名，无域名为 _default.conf）
+# Location 片段：/etc/nginx/conf.d/locations/home-portal.conf（location /，根路径直达）
+# HTTPS：certbot certonly（只签发证书，不改 Nginx）；80/443 server 块由本脚本写入并含 include locations
+#
+# 与 Release Hub 共存：
+#   两个服务共用同一 Nginx 主 server 块（conf.d/<domain>.conf），各自在 conf.d/locations/ 下维护片段
+#   HomePortal  → location /          （根路径，直接域名访问）
+#   Release Hub → location /releasehub/（子路径）
+#   先部署的服务创建主 server 块；后部署的服务检测到文件已存在则跳过创建，仅添加自己的 location 片段
 # ============================================
-set -euo pipefail
+
+set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="$SCRIPT_DIR"
 MARKER="$INSTALL_DIR/.homeportal-deploy-init"
 SERVICE_NAME="home-portal"
-NGINX_SITE="/etc/nginx/sites-available/home-portal"
-UNIFIED_NGINX="${UNIFIED_NGINX:-0}"
-UNIFIED_SNIPPET_DIR="${UNIFIED_SNIPPET_DIR:-/etc/nginx/snippets/unified.d}"
-UNIFIED_SITE_AVAILABLE="${UNIFIED_SITE_FILE:-/etc/nginx/sites-available/unified-apps.conf}"
-UNIFIED_SITE_LINK="${UNIFIED_SITE_ENABLED_NAME:-unified-apps}"
+PORT=3000
+NGINX_ENABLED=0
+HTTPS_ENABLED=0
+DOMAIN_RESOLVED=""
+MAIN_NGINX_CONF=""
 NODE_BIN="$(command -v node || true)"
 
+# ── Root 检查 ──────────────────────────────────────────────────────────────────
 if [ "$(id -u)" -ne 0 ]; then
   echo "本脚本需要 root 以安装 systemd 与 Nginx 配置，请执行:" >&2
   echo "  sudo bash $0" >&2
@@ -38,65 +47,253 @@ if [ -z "${NODE_BIN}" ]; then
   exit 1
 fi
 
-# 确保存在 pnpm：优先 corepack，其次 npm 全局安装
-ensure_pnpm() {
-  if command -v pnpm &>/dev/null; then
+# ── 是否为不适合公网访问 / Let's Encrypt 的主机名（如 mDNS 的 *.local）────────
+domain_is_nonpublic_hostname() {
+  local d="$1"
+  [ -z "$d" ] && return 0
+  case "$d" in
+    localhost|localhost.*) return 0 ;;
+  esac
+  [[ "$d" == *.local ]] && return 0
+  [[ "$d" == *.localdomain ]] && return 0
+  [[ "$d" == *.lan ]] && return 0
+  [[ "$d" == *.internal ]] && return 0
+  return 1
+}
+
+# ── 主配置文件路径：与 Release Hub 保持一致（共用同一文件）───────────────────
+# 无域名或内网保留名 → _default.conf；否则取 FQDN 倒数第二段（如 www.example.com → example.conf）
+nginx_main_conf_path() {
+  local d="$1"
+  if [ -z "$d" ] || domain_is_nonpublic_hostname "$d"; then
+    echo "/etc/nginx/conf.d/_default.conf"
     return 0
   fi
+  local label
+  label="$(echo "$d" | awk -F. '{print $(NF-1)}')"
+  [ -z "$label" ] && label="_default"
+  echo "/etc/nginx/conf.d/${label}.conf"
+}
+
+# ── 域名解析：DOMAIN → hostname -f（非保留名）→ 空 ──────────────────────────
+homeportal_resolve_domain() {
+  DOMAIN_RESOLVED="$(echo "${DOMAIN:-}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  if [ -z "$DOMAIN_RESOLVED" ]; then
+    local HFN
+    HFN="$(hostname -f 2>/dev/null || true)"
+    if [ -n "$HFN" ] && [ "$HFN" != "localhost" ] && [[ "$HFN" == *.* ]]; then
+      if ! domain_is_nonpublic_hostname "$HFN"; then
+        DOMAIN_RESOLVED="$HFN"
+        echo "▸ 使用 hostname -f 作为域名: $DOMAIN_RESOLVED"
+      else
+        echo "⚠ hostname -f「$HFN」为内网保留名，已忽略；请设置 DOMAIN="
+      fi
+    fi
+  else
+    echo "▸ 使用 DOMAIN=$DOMAIN_RESOLVED"
+  fi
+}
+
+# ── 移除发行版默认站点，避免与 _default.conf 的 server_name _ 冲突 ─────────────
+nginx_disable_stock_default_site() {
+  if [ -e /etc/nginx/sites-enabled/default ]; then
+    echo "▸ 移除发行版默认站点 sites-enabled/default（避免与 _default.conf 的 server_name _ 冲突）"
+    rm -f /etc/nginx/sites-enabled/default
+  fi
+  # 迁移：移除旧版 HomePortal 遗留的 sites-available 配置（旧架构已废弃）
+  if [ -L /etc/nginx/sites-enabled/home-portal ] || [ -e /etc/nginx/sites-enabled/home-portal ]; then
+    echo "▸ 迁移：移除旧版 sites-enabled/home-portal（已改用 conf.d 架构）"
+    rm -f /etc/nginx/sites-enabled/home-portal
+  fi
+  if [ -f /etc/nginx/sites-available/home-portal ]; then
+    echo "▸ 迁移：移除旧版 sites-available/home-portal"
+    rm -f /etc/nginx/sites-available/home-portal
+  fi
+}
+
+# ── 已配置公网域名时删除旧的 _default.conf，避免路由混乱 ────────────────────
+nginx_remove_stale_default_conf_for_domain() {
+  if [ -z "$DOMAIN_RESOLVED" ] || domain_is_nonpublic_hostname "$DOMAIN_RESOLVED"; then
+    return 0
+  fi
+  if [ -f /etc/nginx/conf.d/_default.conf ]; then
+    echo "▸ 已配置公网域名，移除 /etc/nginx/conf.d/_default.conf（避免与域名主配置冲突）"
+    rm -f /etc/nginx/conf.d/_default.conf
+  fi
+}
+
+# ── 主 server 块：HTTP-only。仅在文件不存在时创建（共存关键：不覆盖已有配置）──
+# 若 Release Hub 已先运行并创建了该文件，此函数直接跳过，HomePortal 只添加自己的 location 片段
+ensure_main_server_block() {
+  local sn
+  local listen_directive
+  if [ -n "$DOMAIN_RESOLVED" ] && ! domain_is_nonpublic_hostname "$DOMAIN_RESOLVED"; then
+    sn="$DOMAIN_RESOLVED"
+    listen_directive='    listen 80;
+    listen [::]:80;'
+  else
+    sn="_"
+    # 无域名时须为 default_server，且已去掉发行版 default，否则按 IP 访问不会落到本 server
+    listen_directive='    listen 80 default_server;
+    listen [::]:80 default_server;'
+  fi
+
+  if [ -f "$MAIN_NGINX_CONF" ]; then
+    echo "▸ 主 Nginx 配置已存在（可能由 Release Hub 创建），跳过以保持共存: $MAIN_NGINX_CONF"
+    echo "  （如需重建，请手动删除后重新运行: rm -f $MAIN_NGINX_CONF && sudo bash deploy.sh）"
+    return 0
+  fi
+
+  echo "▸ 写入主 Nginx 配置（HTTP）: $MAIN_NGINX_CONF（server_name $sn）"
+  tee "$MAIN_NGINX_CONF" > /dev/null <<NGX
+# HomePortal/ReleaseHub — 主 server 块（由 deploy.sh 管理）；各服务 location 见 conf.d/locations/
+server {
+${listen_directive}
+    server_name ${sn};
+
+    client_max_body_size 500M;
+    client_body_timeout 300s;
+
+    include /etc/nginx/conf.d/locations/*.conf;
+}
+NGX
+}
+
+# ── HomePortal location 片段（根路径 /，直接域名访问）──────────────────────────
+write_homeportal_location() {
+  mkdir -p /etc/nginx/conf.d/locations
+  local loc_path="/etc/nginx/conf.d/locations/home-portal.conf"
+  tee "$loc_path" > /dev/null <<NGX
+# HomePortal — 由 deploy.sh 管理（根路径，直接域名访问）
+location / {
+    proxy_pass http://127.0.0.1:${PORT};
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade \$http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host \$host;
+    proxy_set_header X-Real-IP \$remote_addr;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto \$scheme;
+    proxy_read_timeout 300s;
+    proxy_send_timeout 300s;
+}
+NGX
+}
+
+# ── certbot certonly 成功后写入：HTTP 仅跳转 HTTPS + 443 含 include locations ──
+# 不让 certbot --nginx 改写配置，避免丢失反代 location；80/443 server 块完全由本脚本自管
+write_main_server_block_https() {
+  local dom="$1"
+  local conf="${2:-$MAIN_NGINX_CONF}"
+  [ -z "$dom" ] && return 1
+  echo "▸ 写入 HTTPS 主配置: $conf（server_name $dom，由脚本自管 80/443）"
+  tee "$conf" > /dev/null <<NGX
+# HomePortal/ReleaseHub — HTTPS（certonly 后由 deploy.sh 写入）；各服务 location 见 conf.d/locations/
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${dom};
+
+    return 301 https://\$host\$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name ${dom};
+
+    ssl_certificate     /etc/letsencrypt/live/${dom}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${dom}/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    client_max_body_size 500M;
+    client_body_timeout 300s;
+
+    include /etc/nginx/conf.d/locations/*.conf;
+}
+NGX
+}
+
+# ── DNS 预检：域名 A/AAAA 是否包含本机公网 IP ────────────────────────────────
+dns_resolves_to_public_ip() {
+  local dom="$1"
+  local pub="$2"
+  local line
+  [ -z "$dom" ] || [ -z "$pub" ] && return 1
+  [ "$pub" = "YOUR_SERVER_IP" ] && return 1
+  if ! command -v dig &>/dev/null; then
+    echo "⚠ 未找到 dig 命令，跳过 DNS 预检，将直接尝试 certbot dry-run"
+    return 0
+  fi
+  while read -r line; do
+    [ -n "$line" ] && [ "$line" = "$pub" ] && return 0
+  done < <(dig +short "$dom" A 2>/dev/null)
+  while read -r line; do
+    [ -n "$line" ] && [ "$line" = "$pub" ] && return 0
+  done < <(dig +short "$dom" AAAA 2>/dev/null)
+  return 1
+}
+
+# ── 确保存在 pnpm：优先 corepack，其次 npm 全局安装 ─────────────────────────
+ensure_pnpm() {
+  if command -v pnpm &>/dev/null; then return 0; fi
   if command -v corepack &>/dev/null; then
     echo "▸ 未检测到 pnpm，通过 corepack 启用..."
     corepack enable
     corepack prepare pnpm@latest --activate
   fi
-  if command -v pnpm &>/dev/null; then
-    return 0
-  fi
+  if command -v pnpm &>/dev/null; then return 0; fi
+  local _npm
   _npm="$(command -v npm || true)"
   if [ -n "$_npm" ]; then
     echo "▸ 通过 npm 全局安装 pnpm..."
     "$_npm" install -g pnpm
   fi
-  if command -v pnpm &>/dev/null; then
-    return 0
+  if ! command -v pnpm &>/dev/null; then
+    echo "错误: 无法安装 pnpm。请执行: corepack enable && corepack prepare pnpm@latest --activate" >&2
+    exit 1
   fi
-  echo "错误: 无法安装 pnpm。请安装 Node 18+ 并执行: corepack enable && corepack prepare pnpm@latest --activate" >&2
-  echo "  或: npm install -g pnpm" >&2
-  exit 1
 }
-ensure_pnpm
-PNPM_BIN="$(command -v pnpm)"
 
-# 服务运行用户：来自 sudo 的调用者；无 SUDO_USER 时回退 www-data（此时会整目录 chown 给该用户）
+echo ""
+echo "  ◈ HomePortal 部署脚本"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+echo "  安装目录: $INSTALL_DIR"
+echo ""
+
+# ── Node.js 检查 ───────────────────────────────────────────────────────────────
+echo "✓ Node.js $($NODE_BIN -v) 已安装"
+
+# ── 服务运行用户：来自 sudo 的调用者；无 SUDO_USER 时回退 www-data ────────────
 if [ -n "${SUDO_USER:-}" ]; then
   RUN_USER="$SUDO_USER"
 else
-  echo "提示: 未检测到 SUDO_USER（例如用 root su 直接执行）。将使用用户 www-data 运行服务；" >&2
-  echo "      建议改为: ssh 普通用户登录后执行 sudo bash $0，以便目录属主为该用户。" >&2
+  echo "提示: 未检测到 SUDO_USER（如直接以 root 运行）。将使用 www-data 运行服务；" >&2
+  echo "      建议改为普通用户执行: sudo bash $0" >&2
   RUN_USER=www-data
 fi
-
-cd "$INSTALL_DIR"
-
-# 若已有 systemd 单元或 PM2 同名进程，先停止/移除，避免更新依赖时旧进程占用端口
-homeportal_runtime_teardown() {
-  if systemctl cat "${SERVICE_NAME}.service" &>/dev/null; then
-    echo "▸ 检测到已有 systemd 服务「${SERVICE_NAME}」，先停止以便重新部署..."
-    systemctl stop "$SERVICE_NAME" 2>/dev/null || true
-  fi
-  if command -v pm2 &>/dev/null && pm2 describe "$SERVICE_NAME" &>/dev/null; then
-    echo "▸ 检测到 PM2 中有同名应用「${SERVICE_NAME}」，先停止并删除（本脚本使用 systemd 托管）..."
-    pm2 stop "$SERVICE_NAME" 2>/dev/null || true
-    pm2 delete "$SERVICE_NAME" 2>/dev/null || true
-  fi
-}
-homeportal_runtime_teardown
 
 if ! id "$RUN_USER" &>/dev/null; then
   echo "错误: 系统用户 $RUN_USER 不存在" >&2
   exit 1
 fi
 
-# 安装目录必须对 RUN_USER 可写（pnpm 建 node_modules）；仅当属主为 root 时自动 chown，避免误改普通用户家目录
+cd "$INSTALL_DIR"
+
+# ── 停止已有同名服务，避免更新依赖时旧进程占用端口 ──────────────────────────
+if systemctl cat "${SERVICE_NAME}.service" &>/dev/null; then
+  echo "▸ 检测到已有 systemd 服务「${SERVICE_NAME}」，先停止以便重新部署..."
+  systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+fi
+if command -v pm2 &>/dev/null && pm2 describe "$SERVICE_NAME" &>/dev/null; then
+  echo "▸ 检测到 PM2 中有同名应用「${SERVICE_NAME}」，先停止并删除（本脚本使用 systemd 托管）..."
+  pm2 stop "$SERVICE_NAME" 2>/dev/null || true
+  pm2 delete "$SERVICE_NAME" 2>/dev/null || true
+fi
+
+# ── 目录权限 ──────────────────────────────────────────────────────────────────
 _cur_u="$(stat -c '%U' "$INSTALL_DIR" 2>/dev/null || echo '')"
 if ! sudo -u "$RUN_USER" test -w "$INSTALL_DIR" 2>/dev/null; then
   if [ "$_cur_u" = "root" ]; then
@@ -105,56 +302,14 @@ if ! sudo -u "$RUN_USER" test -w "$INSTALL_DIR" 2>/dev/null; then
   else
     echo "错误: 用户 $RUN_USER 对 $INSTALL_DIR 无写权限（当前属主: ${_cur_u:-?}）。" >&2
     echo "  请执行: sudo chown -R $RUN_USER:$RUN_USER $INSTALL_DIR" >&2
-    echo "  或使用: sudo -u $_cur_u bash $0（从仓库属主用户执行 sudo）" >&2
     exit 1
   fi
 fi
 
-echo "HomePortal 安装目录: $INSTALL_DIR"
-
-# ---------- 部署前：是否公网域名（在 pnpm 等耗时步骤之前；HTTPS 须与浏览器域名一致）----------
-HP_EARLY_SRV=""
-_hp_sn_preview=""
-_hp_sn_preview_norm=""
-if [ -f "$INSTALL_DIR/.env" ]; then
-  _l="$(grep -E '^[[:space:]]*HOMEPORTAL_SERVER_NAME=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 || true)"
-  _hp_sn_preview="${_l#*=}"
-  _hp_sn_preview="${_hp_sn_preview//\"/}"
-  _hp_sn_preview="${_hp_sn_preview//\'/}"
-  _hp_sn_preview="${_hp_sn_preview//$'\r'/}"
-  _hp_sn_preview_norm="$(echo "${_hp_sn_preview:-}" | tr -cd '-a-zA-Z0-9._ ' | xargs)"
-fi
-
-if [ -n "${HOMEPORTAL_SERVER_NAME:-}" ]; then
-  HP_EARLY_SRV=""
-elif [ -n "$_hp_sn_preview_norm" ] && [ "$_hp_sn_preview_norm" != "home-portal.local" ]; then
-  HP_EARLY_SRV="$_hp_sn_preview_norm"
-  echo "▸ 沿用 .env 中的域名（server_name）: $HP_EARLY_SRV"
-  echo "  若要修改：编辑 $INSTALL_DIR/.env 中的 HOMEPORTAL_SERVER_NAME，或执行 HOMEPORTAL_SERVER_NAME=新域名 sudo bash deploy.sh"
-elif [ -t 0 ]; then
-  echo ""
-  echo "──────── Nginx / 公网访问 ────────"
-  echo "若仅本机或内网调试，选「否」即可；若公网用域名访问（含 https），选「是」并填写域名。"
-  read -r -p "是否有公网域名用于本站（与浏览器地址栏一致）？[y/N] " _hp_has_pub
-  case "${_hp_has_pub}" in
-    [yY][eE][sS]|[yY])
-      read -r -p "请输入域名（空格分隔多个，如 www.example.com example.com）: " _hp_dom_in
-      HP_EARLY_SRV="$(echo "${_hp_dom_in:-}" | tr -cd '-a-zA-Z0-9._ ' | xargs)"
-      [ -z "$HP_EARLY_SRV" ] && HP_EARLY_SRV="home-portal.local"
-      ;;
-    *)
-      HP_EARLY_SRV="home-portal.local"
-      ;;
-  esac
-  echo "▸ 将使用 server_name: $HP_EARLY_SRV"
-else
-  HP_EARLY_SRV="${_hp_sn_preview_norm:-home-portal.local}"
-  [ -z "$HP_EARLY_SRV" ] && HP_EARLY_SRV="home-portal.local"
-fi
-
-echo "▸ 依赖安装: pnpm install --prod（用户: $RUN_USER，Node $($NODE_BIN -v)，$($PNPM_BIN -v)）"
-
-# HOME 指向项目目录，避免 www-data 等用户因 /var/www 不可写导致 npm/pnpm 缓存失败
+# ── pnpm + 安装依赖 ────────────────────────────────────────────────────────────
+ensure_pnpm
+PNPM_BIN="$(command -v pnpm)"
+echo "▸ 安装依赖: pnpm install --prod（用户: $RUN_USER，Node $($NODE_BIN -v)，$($PNPM_BIN -v)）"
 LOCK_EXTRA=""
 [ -f "$INSTALL_DIR/pnpm-lock.yaml" ] && LOCK_EXTRA="--frozen-lockfile"
 sudo -u "$RUN_USER" \
@@ -163,7 +318,26 @@ sudo -u "$RUN_USER" \
   XDG_CONFIG_HOME="$INSTALL_DIR/.config" \
   bash -c "cd '$INSTALL_DIR' && exec '$PNPM_BIN' install --prod $LOCK_EXTRA"
 
-# ---------- 首次向导 ----------
+# ── 公网 IP（用于提示与 HTTPS 验证）──────────────────────────────────────────
+PUBLIC_IP=$(curl -s --connect-timeout 5 ifconfig.me 2>/dev/null || curl -s --connect-timeout 5 icanhazip.com 2>/dev/null || echo "YOUR_SERVER_IP")
+
+# ── 是否启用 Nginx（默认启用）────────────────────────────────────────────────
+USE_NGINX_RESOLVED=0
+if [ "${SKIP_NGINX:-0}" = "1" ]; then
+  echo "✓ 跳过 Nginx（SKIP_NGINX=1）"
+elif [ "${USE_NGINX:-}" = "0" ]; then
+  echo "✓ 跳过 Nginx（USE_NGINX=0）"
+else
+  USE_NGINX_RESOLVED=1
+  echo "▸ 默认启用 Nginx（HTTP 80 → 127.0.0.1:${PORT}；USE_NGINX=0 或 SKIP_NGINX=1 可关闭）"
+fi
+
+# ── 域名解析（Nginx / HTTPS 共用）────────────────────────────────────────────
+homeportal_resolve_domain
+MAIN_NGINX_CONF="$(nginx_main_conf_path "$DOMAIN_RESOLVED")"
+echo "▸ 主 Nginx 配置文件: $MAIN_NGINX_CONF"
+
+# ── 首次部署向导 ──────────────────────────────────────────────────────────────
 if [ ! -f "$MARKER" ]; then
   echo ""
   echo "========== 首次部署向导 =========="
@@ -174,20 +348,14 @@ if [ ! -f "$MARKER" ]; then
   echo ""
   [ -z "${HPWD:-}" ] && HPWD=rainy
 
-  # 域名已在 pnpm 之前问过（HP_EARLY_SRV）；无则占位
-  WIZ_SRV="${HP_EARLY_SRV:-home-portal.local}"
-  [ -z "$WIZ_SRV" ] && WIZ_SRV="home-portal.local"
-
   JWT_SECRET_VALUE="$(openssl rand -hex 32)"
-  PORT_VALUE="${PORT:-3000}"
 
   {
-    echo "PORT=$PORT_VALUE"
+    echo "PORT=$PORT"
     echo "LISTEN_HOST=127.0.0.1"
     printf 'ADMIN_PASSWORD=%q\n' "$HPWD"
     echo "JWT_SECRET=$JWT_SECRET_VALUE"
     echo "PORTAL_TITLE=指引页"
-    printf 'HOMEPORTAL_SERVER_NAME=%q\n' "$WIZ_SRV"
   } > "$INSTALL_DIR/.env"
 
   chmod 600 "$INSTALL_DIR/.env"
@@ -203,9 +371,8 @@ if [ ! -f "$MARKER" ]; then
   chown "$RUN_USER:$RUN_USER" "$MARKER" 2>/dev/null || true
 
   echo ""
-  echo "已写入: $INSTALL_DIR/.env"
-  echo "二次修改密码或 JWT：编辑该文件后执行:"
-  echo "  sudo systemctl restart $SERVICE_NAME"
+  echo "✓ 配置文件已生成: $INSTALL_DIR/.env"
+  echo "  二次修改密码或 JWT：编辑该文件后执行: systemctl restart $SERVICE_NAME"
   echo ""
 elif [ ! -f "$INSTALL_DIR/.env" ]; then
   echo "错误: 缺少 $INSTALL_DIR/.env，且已存在首次部署标记 $MARKER" >&2
@@ -213,86 +380,21 @@ elif [ ! -f "$INSTALL_DIR/.env" ]; then
   exit 1
 fi
 
-# 从 .env 读取 PORT（不解 source，避免密码中的特殊字符破坏 shell）
+# ── 从 .env 读取 PORT（不 source，避免特殊字符破坏 shell）──────────────────
 _port_line="$(grep -E '^[[:space:]]*PORT=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 || true)"
 APP_PORT="${_port_line#*=}"
 APP_PORT="${APP_PORT//\"/}"
 APP_PORT="${APP_PORT//\'/}"
 APP_PORT="${APP_PORT//$'\r'/}"
 APP_PORT="${APP_PORT:-3000}"
+PORT="$APP_PORT"
 
-# ---------- Nginx server_name（持久化 .env 的 HOMEPORTAL_SERVER_NAME；公网/HTTPS 必须与域名一致）----------
-_hp_sn_file=""
-if [ -f "$INSTALL_DIR/.env" ]; then
-  _l="$(grep -E '^[[:space:]]*HOMEPORTAL_SERVER_NAME=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 || true)"
-  _hp_sn_file="${_l#*=}"
-  _hp_sn_file="${_hp_sn_file//\"/}"
-  _hp_sn_file="${_hp_sn_file//\'/}"
-  _hp_sn_file="${_hp_sn_file//$'\r'/}"
-fi
-if [ -n "${HOMEPORTAL_SERVER_NAME:-}" ]; then
-  HOMEPORTAL_SRV_NAME="$HOMEPORTAL_SERVER_NAME"
-elif [ -n "${HP_EARLY_SRV:-}" ]; then
-  HOMEPORTAL_SRV_NAME="$HP_EARLY_SRV"
-elif [ -n "$_hp_sn_file" ]; then
-  HOMEPORTAL_SRV_NAME="$_hp_sn_file"
-elif [ -t 0 ]; then
-  echo ""
-  read -r -p "Nginx server_name（域名，空格分隔；须与浏览器访问域名一致；回车=home-portal.local）: " _hp_sn_read
-  HOMEPORTAL_SRV_NAME="${_hp_sn_read:-}"
-else
-  HOMEPORTAL_SRV_NAME="home-portal.local"
-fi
-HOMEPORTAL_SRV_NAME="$(echo "${HOMEPORTAL_SRV_NAME:-home-portal.local}" | tr -cd '-a-zA-Z0-9._ ' | xargs)"
-[ -z "$HOMEPORTAL_SRV_NAME" ] && HOMEPORTAL_SRV_NAME="home-portal.local"
-
-HOMEPORTAL_PATH_SLUG=""
-if [ "$UNIFIED_NGINX" = "1" ]; then
-  _uun="$(echo "${UNIFIED_SERVER_NAME:-}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-  if [ -z "$_uun" ]; then
-    echo "错误: UNIFIED_NGINX=1 时必须设置 UNIFIED_SERVER_NAME（与 Release Hub 共用，如 www.example.com）" >&2
-    exit 1
-  fi
-  HOMEPORTAL_SRV_NAME="$_uun"
-  HOMEPORTAL_PATH_SLUG="$(echo "${HOMEPORTAL_NGINX_PREFIX:-home}" | sed 's/^\/\+//;s/\/\+$//')"
-  HOMEPORTAL_PATH_SLUG="$(echo "$HOMEPORTAL_PATH_SLUG" | tr -cd 'a-zA-Z0-9_-')"
-  [ -z "$HOMEPORTAL_PATH_SLUG" ] && HOMEPORTAL_PATH_SLUG="home"
-  echo "▸ 统一 Nginx：server_name=$HOMEPORTAL_SRV_NAME · 对外路径 /${HOMEPORTAL_PATH_SLUG}/ · HOMEPORTAL_BASE_PATH 将写入 .env"
-fi
-
-homeportal_env_sync_server_name() {
-  [ ! -f "$INSTALL_DIR/.env" ] && return 0
-  _tmp="$(mktemp)"
-  grep -vE '^[[:space:]]*HOMEPORTAL_SERVER_NAME=' "$INSTALL_DIR/.env" > "$_tmp" 2>/dev/null || true
-  printf 'HOMEPORTAL_SERVER_NAME=%q\n' "$HOMEPORTAL_SRV_NAME" >> "$_tmp"
-  mv "$_tmp" "$INSTALL_DIR/.env"
-  chown "$RUN_USER:$RUN_USER" "$INSTALL_DIR/.env" 2>/dev/null || true
-  chmod 600 "$INSTALL_DIR/.env" 2>/dev/null || true
-}
-homeportal_env_sync_server_name
-
-homeportal_env_sync_base_path() {
-  [ ! -f "$INSTALL_DIR/.env" ] && return 0
-  _tmp="$(mktemp)"
-  if [ "$UNIFIED_NGINX" = "1" ] && [ -n "${HOMEPORTAL_PATH_SLUG:-}" ]; then
-    grep -vE '^[[:space:]]*HOMEPORTAL_BASE_PATH=' "$INSTALL_DIR/.env" > "$_tmp" 2>/dev/null || true
-    printf 'HOMEPORTAL_BASE_PATH=/%s\n' "$HOMEPORTAL_PATH_SLUG" >> "$_tmp"
-  else
-    grep -vE '^[[:space:]]*HOMEPORTAL_BASE_PATH=' "$INSTALL_DIR/.env" > "$_tmp" 2>/dev/null || true
-  fi
-  mv "$_tmp" "$INSTALL_DIR/.env"
-  chown "$RUN_USER:$RUN_USER" "$INSTALL_DIR/.env" 2>/dev/null || true
-  chmod 600 "$INSTALL_DIR/.env" 2>/dev/null || true
-}
-homeportal_env_sync_base_path
-
-# 旧 .env 无 LISTEN_HOST 时补全，与 server 默认仅监听本机一致
-if [ -f "$INSTALL_DIR/.env" ] && ! grep -qE '^[[:space:]]*LISTEN_HOST=' "$INSTALL_DIR/.env" 2>/dev/null; then
+# 旧 .env 无 LISTEN_HOST 时补全
+if ! grep -qE '^[[:space:]]*LISTEN_HOST=' "$INSTALL_DIR/.env" 2>/dev/null; then
   echo "LISTEN_HOST=127.0.0.1" >> "$INSTALL_DIR/.env"
-  chown "$RUN_USER:$RUN_USER" "$INSTALL_DIR/.env" 2>/dev/null || true
-  chmod 600 "$INSTALL_DIR/.env" 2>/dev/null || true
 fi
 
+# ── systemd 服务 ──────────────────────────────────────────────────────────────
 UNIT="/etc/systemd/system/${SERVICE_NAME}.service"
 
 tee "$UNIT" > /dev/null <<SYSTEMD
@@ -315,7 +417,6 @@ SYSTEMD
 
 chown root:root "$UNIT"
 chmod 644 "$UNIT"
-
 chown -R "$RUN_USER:$RUN_USER" "$INSTALL_DIR/data" 2>/dev/null || true
 chown "$RUN_USER:$RUN_USER" "$INSTALL_DIR/.env" 2>/dev/null || true
 
@@ -325,292 +426,179 @@ systemctl restart "$SERVICE_NAME"
 
 SYSTEMD_OK=0
 systemctl is-active --quiet "$SERVICE_NAME" && SYSTEMD_OK=1
+echo "▸ systemd：已启用并启动 $SERVICE_NAME（监听 127.0.0.1:${PORT}，开机自启）"
 
-echo "▸ systemd：已启用并启动 $SERVICE_NAME（监听 127.0.0.1:${APP_PORT}，开机自启）"
-
-ensure_unified_nginx_umbrella_http() {
-  local sn="$1"
-  mkdir -p "$UNIFIED_SNIPPET_DIR"
-  if [ ! -f "$UNIFIED_SITE_AVAILABLE" ]; then
-    tee "$UNIFIED_SITE_AVAILABLE" > /dev/null <<UMB
-# 统一多应用 — 首次生成；子应用在 ${UNIFIED_SNIPPET_DIR} 下维护片段
-server {
-    listen 80;
-    listen [::]:80;
-    server_name ${sn};
-
-    client_max_body_size 500M;
-    client_body_timeout 300s;
-
-    include ${UNIFIED_SNIPPET_DIR}/*.conf;
-}
-UMB
-  fi
-  ln -sf "$UNIFIED_SITE_AVAILABLE" "/etc/nginx/sites-enabled/${UNIFIED_SITE_LINK}.conf"
-}
-
-write_homeportal_unified_snippet() {
-  mkdir -p "$UNIFIED_SNIPPET_DIR"
-  tee "${UNIFIED_SNIPPET_DIR}/20-home-portal.conf" > /dev/null <<HPS
-# HomePortal — 片段（deploy.sh）
-location /${HOMEPORTAL_PATH_SLUG}/ {
-    proxy_pass http://127.0.0.1:${APP_PORT}/;
-    proxy_http_version 1.1;
-    proxy_set_header Upgrade \$http_upgrade;
-    proxy_set_header Connection "upgrade";
-    proxy_set_header Host \$host;
-    proxy_set_header X-Real-IP \$remote_addr;
-    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto \$scheme;
-    proxy_read_timeout 300s;
-    proxy_send_timeout 300s;
-}
-HPS
-}
-
-# ---------- Nginx ----------
-NGINX_RELOAD_OK=0
-NGINX_NOT_INSTALLED=0
-# 多站并存：默认仅 listen 80（无 default_server）；仅当 HOMEPORTAL_FORCE_DEFAULT_SERVER=1 时尝试接管 default
-HP_HOMEPORTAL_DEFAULT=0
-LISTEN_BLOCK="    listen 80;
-    listen [::]:80;"
-if [ "$UNIFIED_NGINX" != "1" ] && [ "${HOMEPORTAL_FORCE_DEFAULT_SERVER:-0}" = "1" ]; then
-  DEFAULT_SERVER_OTHERS=()
-  if [ -d /etc/nginx/sites-enabled ]; then
-    for _nf in /etc/nginx/sites-enabled/*; do
-      [ -e "$_nf" ] || continue
-      case "$(basename "$_nf" 2>/dev/null || echo "")" in
-        home-portal) continue ;;
-      esac
-      if grep -qE 'listen[[:space:]]+[^;]*default_server' "$_nf" 2>/dev/null; then
-        DEFAULT_SERVER_OTHERS+=("$_nf")
-      fi
-    done
-  fi
-  if [ "${#DEFAULT_SERVER_OTHERS[@]}" -eq 0 ]; then
-    HP_HOMEPORTAL_DEFAULT=1
-    LISTEN_BLOCK="    listen 80 default_server;
-    listen [::]:80 default_server;"
-  else
-    echo ""
-    echo "▸ HOMEPORTAL_FORCE_DEFAULT_SERVER=1：下列配置含 default_server，需移除后本站点才能设为 default："
-    for _nf in "${DEFAULT_SERVER_OTHERS[@]}"; do
-      echo "    - $_nf"
-    done
-    if [ -t 0 ] && [ -z "${HOMEPORTAL_DEFAULT_SERVER+x}" ]; then
-      read -r -p "是否从上述文件中移除 default_server，并将 HomePortal 设为 80 的 default？[y/N] " _hpds
-      case "${_hpds}" in
-        [yY][eE][sS]|[yY]) HP_HOMEPORTAL_DEFAULT=1 ;;
-        *) HP_HOMEPORTAL_DEFAULT=0 ;;
-      esac
+# ── Nginx 反向代理 ────────────────────────────────────────────────────────────
+if [ "$USE_NGINX_RESOLVED" = "1" ]; then
+  echo "▸ 安装并配置 Nginx 反向代理..."
+  if apt-get update -qq && apt-get install -y nginx; then
+    nginx_disable_stock_default_site
+    nginx_remove_stale_default_conf_for_domain
+    mkdir -p /etc/nginx/conf.d/locations
+    # 已有 Let's Encrypt 证书时直接写 80/443（避免 ensure_main 仅 HTTP 覆盖掉上次部署的 HTTPS）
+    if [ -n "$DOMAIN_RESOLVED" ] && ! domain_is_nonpublic_hostname "$DOMAIN_RESOLVED" \
+      && [ "${USE_HTTPS:-}" != "0" ] \
+      && [ -f "/etc/letsencrypt/live/${DOMAIN_RESOLVED}/fullchain.pem" ]; then
+      write_main_server_block_https "$DOMAIN_RESOLVED" "$MAIN_NGINX_CONF"
     else
-      case "${HOMEPORTAL_DEFAULT_SERVER:-keep}" in
-        replace|yes|1|true|Y|y) HP_HOMEPORTAL_DEFAULT=1 ;;
-        *) HP_HOMEPORTAL_DEFAULT=0 ;;
-      esac
-      if [ -z "${HOMEPORTAL_DEFAULT_SERVER+x}" ]; then
-        echo "  （非交互：等同 HOMEPORTAL_DEFAULT_SERVER=keep；若需接管请设 replace）"
-      fi
+      ensure_main_server_block
     fi
-    if [ "$HP_HOMEPORTAL_DEFAULT" -eq 1 ]; then
-      for _nf in "${DEFAULT_SERVER_OTHERS[@]}"; do
-        echo "▸ 正在从 $(basename "$_nf") 移除 default_server（备份: ${_nf}.bak.homeportal）..."
-        cp -a "$_nf" "${_nf}.bak.homeportal"
-        sed -i '/^[[:space:]]*listen\>/s/[[:space:]]*default_server//g' "$_nf"
-      done
-      LISTEN_BLOCK="    listen 80 default_server;
-    listen [::]:80 default_server;"
-    fi
-  fi
-fi
-
-# HTTPS：在 /etc/letsencrypt/live/ 下查找与 server_name 匹配的证书并生成 :443 反代（浏览器默认走 https）
-HP_LE_CERT=""
-HP_LE_KEY=""
-_hp_sn_array=()
-read -r -a _hp_sn_array <<< "$HOMEPORTAL_SRV_NAME"
-for _sn in "${_hp_sn_array[@]}"; do
-  [ -z "$_sn" ] && continue
-  if [ -f "/etc/letsencrypt/live/${_sn}/fullchain.pem" ] && [ -f "/etc/letsencrypt/live/${_sn}/privkey.pem" ]; then
-    HP_LE_CERT="/etc/letsencrypt/live/${_sn}/fullchain.pem"
-    HP_LE_KEY="/etc/letsencrypt/live/${_sn}/privkey.pem"
-    break
-  fi
-done
-if [ -z "$HP_LE_CERT" ] && [ -d /etc/letsencrypt/live ] && [ "$HOMEPORTAL_SRV_NAME" != "home-portal.local" ] && command -v openssl >/dev/null 2>&1; then
-  for _d in /etc/letsencrypt/live/*; do
-    [ -d "$_d" ] || continue
-    [ "$(basename "$_d")" = "README" ] && continue
-    [ -f "$_d/fullchain.pem" ] && [ -f "$_d/privkey.pem" ] || continue
-    _ok=0
-    for _sn in "${_hp_sn_array[@]}"; do
-      [ -z "$_sn" ] && continue
-      if openssl x509 -in "$_d/fullchain.pem" -noout -text 2>/dev/null | grep -Fq "DNS:$_sn"; then
-        _ok=1
-        break
-      fi
-    done
-    if [ "$_ok" -eq 1 ]; then
-      HP_LE_CERT="$_d/fullchain.pem"
-      HP_LE_KEY="$_d/privkey.pem"
-      break
-    fi
-  done
-fi
-
-HP_SSL_EXTRA=""
-[ -f /etc/letsencrypt/options-ssl-nginx.conf ] && HP_SSL_EXTRA="    include /etc/letsencrypt/options-ssl-nginx.conf;
-"
-[ -f /etc/letsencrypt/ssl-dhparams.pem ] && HP_SSL_EXTRA+="    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
-"
-
-HP_SSL_SERVER_BLOCK=""
-if [ "$UNIFIED_NGINX" != "1" ] && [ -n "$HP_LE_CERT" ]; then
-  HP_SSL_SERVER_BLOCK="$(cat <<SSLBLK
-
-server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
-    server_name ${HOMEPORTAL_SRV_NAME};
-
-    ssl_certificate ${HP_LE_CERT};
-    ssl_certificate_key ${HP_LE_KEY};
-${HP_SSL_EXTRA}
-    location / {
-        proxy_pass http://127.0.0.1:${APP_PORT};
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_read_timeout 300s;
-        proxy_send_timeout 300s;
-    }
-}
-SSLBLK
-)"
-fi
-
-if command -v nginx >/dev/null 2>&1; then
-  if [ "$UNIFIED_NGINX" = "1" ]; then
-    ensure_unified_nginx_umbrella_http "$HOMEPORTAL_SRV_NAME"
-    write_homeportal_unified_snippet
-    rm -f /etc/nginx/sites-enabled/home-portal
+    write_homeportal_location
     if nginx -t; then
-      systemctl reload nginx 2>/dev/null || service nginx reload 2>/dev/null || true
-      NGINX_RELOAD_OK=1
-      echo "▸ 统一 Nginx：已写入 ${UNIFIED_SNIPPET_DIR}/20-home-portal.conf · 主配置 $UNIFIED_SITE_AVAILABLE"
-      echo "  访问: http://${HOMEPORTAL_SRV_NAME}/${HOMEPORTAL_PATH_SLUG}/ （HTTPS 请对 ${UNIFIED_SITE_AVAILABLE##*/} 执行 certbot）"
-    else
-      echo "警告: nginx -t 失败，请检查片段与 $UNIFIED_SITE_AVAILABLE" >&2
-    fi
-  else
-    tee "$NGINX_SITE" > /dev/null <<NGINX
-# HomePortal — 由 deploy.sh 生成（多站默认无 default_server；见 HOMEPORTAL_FORCE_DEFAULT_SERVER）
-# HTTPS：若存在 Let's Encrypt 证书则自动生成下方 :443 块
-server {
-${LISTEN_BLOCK}
-    server_name ${HOMEPORTAL_SRV_NAME};
-
-    location / {
-        proxy_pass http://127.0.0.1:${APP_PORT};
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_read_timeout 300s;
-        proxy_send_timeout 300s;
-    }
-}
-${HP_SSL_SERVER_BLOCK}
-NGINX
-
-    ln -sf "$NGINX_SITE" /etc/nginx/sites-enabled/home-portal
-
-    if nginx -t; then
-      systemctl reload nginx 2>/dev/null || service nginx reload 2>/dev/null || true
-      NGINX_RELOAD_OK=1
-      _hp_ssl_note=""
-      [ -n "$HP_LE_CERT" ] && _hp_ssl_note=" · HTTPS:443 已用证书反代（${HP_LE_CERT}）"
-      if [ "$HP_HOMEPORTAL_DEFAULT" -eq 1 ]; then
-        echo "▸ Nginx：本站点为 80 的 default_server · server_name ${HOMEPORTAL_SRV_NAME} · → 127.0.0.1:${APP_PORT}${_hp_ssl_note}（已 reload）"
+      systemctl enable nginx
+      systemctl reload nginx
+      NGINX_ENABLED=1
+      if [ -n "$DOMAIN_RESOLVED" ] && ! domain_is_nonpublic_hostname "$DOMAIN_RESOLVED"; then
+        echo "✓ Nginx 已启用（http://${DOMAIN_RESOLVED}/ → 127.0.0.1:${PORT}）"
       else
-        echo "▸ Nginx：未使用 default_server · server_name ${HOMEPORTAL_SRV_NAME} · → 127.0.0.1:${APP_PORT}${_hp_ssl_note}（已 reload）"
-        echo ""
-        echo "  提示：请用与 server_name 一致的域名访问；单机多站勿复用域名。"
-        if [ -z "$HP_LE_CERT" ]; then
-          echo "  HTTPS：未检测到 Let's Encrypt 证书路径时未写 :443；需要 HTTPS 时请 certbot 签发后重跑本脚本。"
-        fi
-      fi
-      if [ -z "$HP_LE_CERT" ] && [ "$HOMEPORTAL_SRV_NAME" != "home-portal.local" ]; then
-        echo ""
-        echo "▸ 未找到与 server_name 匹配的 /etc/letsencrypt/live/ 证书，HTTPS 可能仍由其他站点处理。"
-        echo "  可先: sudo certbot certonly --nginx -d www.你的域名.com   然后再次执行: sudo bash deploy.sh"
+        echo "✓ Nginx 已启用（http://${PUBLIC_IP}/ → 127.0.0.1:${PORT}）"
       fi
     else
-      echo "警告: nginx -t 失败，请检查: $NGINX_SITE" >&2
-      if grep -q "443" "$NGINX_SITE" 2>/dev/null; then
-        echo "  若提示 conflicting server name 或 duplicate listen，请检查 sites-enabled 是否已有同名域名的其它 SSL 配置，可暂时禁用冲突文件后重试。" >&2
+      echo "⚠ nginx -t 失败，请检查配置后手动执行: nginx -t && systemctl reload nginx"
+    fi
+  else
+    echo "⚠ Nginx 安装失败，将仅通过端口 ${PORT} 访问"
+  fi
+fi
+
+# ── HTTPS（Let's Encrypt）────────────────────────────────────────────────────
+CERTBOT_EMAIL_VAL="$(echo "${CERTBOT_EMAIL:-}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+
+if [ "$NGINX_ENABLED" != "1" ]; then
+  :
+
+elif [ "${USE_HTTPS:-}" = "0" ]; then
+  echo ""
+  echo "▸ USE_HTTPS=0，跳过 Let's Encrypt（仅 HTTP）"
+
+else
+  echo ""
+  echo "▸ HTTPS：Let's Encrypt（DNS 预检 → dry-run → 正式签发，无交互）"
+  echo "  公网 IP: $PUBLIC_IP；主配置: $MAIN_NGINX_CONF"
+
+  if [ -n "$DOMAIN_RESOLVED" ] && domain_is_nonpublic_hostname "$DOMAIN_RESOLVED"; then
+    echo "⚠ 域名「$DOMAIN_RESOLVED」不适合 Let's Encrypt，已忽略。"
+    DOMAIN_RESOLVED=""
+  fi
+
+  if [ -z "$DOMAIN_RESOLVED" ]; then
+    echo "⚠ 未配置可用域名，跳过 HTTPS。请设置 DOMAIN=你的域名 并确保 DNS 指向本机后重试。"
+  else
+    [ -z "$CERTBOT_EMAIL_VAL" ] && CERTBOT_EMAIL_VAL="admin@${DOMAIN_RESOLVED}"
+    echo "▸ Certbot 邮箱: $CERTBOT_EMAIL_VAL"
+
+    if ! dns_resolves_to_public_ip "$DOMAIN_RESOLVED" "$PUBLIC_IP"; then
+      echo "⚠ DNS 未指向本机 $PUBLIC_IP，跳过 certbot"
+    else
+      echo "▸ DNS 预检通过（$DOMAIN_RESOLVED → $PUBLIC_IP）"
+      echo "▸ 安装 certbot 与 nginx 插件..."
+      if apt-get install -y certbot python3-certbot-nginx; then
+        echo "▸ certbot certonly --nginx --dry-run（staging）..."
+        set +e
+        certbot certonly --nginx \
+          --dry-run \
+          --non-interactive \
+          --agree-tos \
+          --email "$CERTBOT_EMAIL_VAL" \
+          -d "$DOMAIN_RESOLVED"
+        DRY_EXIT=$?
+        set -e
+        if [ "$DRY_EXIT" -ne 0 ]; then
+          echo "⚠ certbot dry-run 失败（$DRY_EXIT），保持 HTTP。可稍后: certbot certonly --nginx -d $DOMAIN_RESOLVED"
+        else
+          echo "▸ dry-run 成功，正式申请证书（certonly，不修改 Nginx 配置）..."
+          set +e
+          certbot certonly --nginx \
+            --non-interactive \
+            --agree-tos \
+            --email "$CERTBOT_EMAIL_VAL" \
+            -d "$DOMAIN_RESOLVED"
+          CERTBOT_EXIT=$?
+          set -e
+          if [ "$CERTBOT_EXIT" -eq 0 ]; then
+            write_main_server_block_https "$DOMAIN_RESOLVED" "$MAIN_NGINX_CONF"
+            if nginx -t; then
+              systemctl reload nginx
+              HTTPS_ENABLED=1
+              echo "✓ HTTPS 已启用（Let's Encrypt；Nginx 80→301 + 443；含 locations）"
+            else
+              echo "⚠ 写入 HTTPS 配置后 nginx -t 失败，回退为 HTTP-only 主配置"
+              ensure_main_server_block
+              nginx -t && systemctl reload nginx || echo "⚠ 回退后 nginx -t 仍失败，请手动检查: nginx -t"
+            fi
+          else
+            echo "⚠ certbot certonly 失败（$CERTBOT_EXIT），保持 HTTP"
+          fi
+        fi
+      else
+        echo "⚠ certbot 安装失败，保持 HTTP"
       fi
     fi
   fi
-else
-  NGINX_NOT_INSTALLED=1
-  echo ""
-  echo "未检测到 Nginx。若需从 80 端口访问，可安装后重新执行:"
-  echo "  sudo apt-get update && sudo apt-get install -y nginx"
-  echo "  sudo bash $(basename "$0")"
 fi
 
+# ── 防火墙 ────────────────────────────────────────────────────────────────────
+if command -v ufw &>/dev/null; then
+  if [ "$NGINX_ENABLED" = "1" ]; then
+    echo "▸ 开放 HTTP 80..."
+    ufw allow 80/tcp
+    if [ "$HTTPS_ENABLED" = "1" ]; then
+      echo "▸ 开放 HTTPS 443..."
+      ufw allow 443/tcp
+    fi
+  fi
+fi
+
+# ── 完成 ──────────────────────────────────────────────────────────────────────
+SERVER_IP="$PUBLIC_IP"
+
 echo ""
-echo "──────── 部署结果 ────────"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  ✓ 部署完成！"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+echo "  数据目录: $INSTALL_DIR/data/"
+echo "  配置文件: $INSTALL_DIR/.env"
+echo ""
 if [ "${SYSTEMD_OK:-0}" -eq 1 ]; then
-  echo "✅ systemd：「$SERVICE_NAME」已运行（监听 127.0.0.1:${APP_PORT}，不对公网暴露）"
+  echo "  ✓ systemd：「$SERVICE_NAME」已运行（监听 127.0.0.1:${PORT}，不对公网暴露）"
 else
-  echo "❌ systemd：服务未 active，请执行: systemctl status $SERVICE_NAME"
+  echo "  ❌ systemd：服务未 active，请执行: systemctl status $SERVICE_NAME"
 fi
 
-if [ "${NGINX_NOT_INSTALLED:-0}" -eq 1 ]; then
-  echo "❌ Nginx：未安装；仅能通过 127.0.0.1:${APP_PORT} 本机访问，公网请装 Nginx 后再放行 80"
-elif [ "${NGINX_RELOAD_OK:-0}" -eq 1 ]; then
-  echo "✅ Nginx：反代已 reload（server_name ${HOMEPORTAL_SRV_NAME}）"
-else
-  if command -v nginx &>/dev/null; then
-    echo "❌ Nginx：nginx -t 失败或未 reload，请检查: $NGINX_SITE"
+if [ "$HTTPS_ENABLED" = "1" ] && [ -n "$DOMAIN_RESOLVED" ]; then
+  echo "  ✓ 首页（HTTPS）: https://${DOMAIN_RESOLVED}/"
+  echo "  ✓ 管理后台:      https://${DOMAIN_RESOLVED}/admin.html"
+  echo "  ✓ Release Hub:   https://${DOMAIN_RESOLVED}/releasehub/"
+  echo "  直连 Node（排障用）: http://$SERVER_IP:$PORT"
+elif [ "$NGINX_ENABLED" = "1" ]; then
+  if [ -n "$DOMAIN_RESOLVED" ]; then
+    echo "  ✓ 首页（HTTP）: http://${DOMAIN_RESOLVED}/"
+    echo "  ✓ 管理后台:     http://${DOMAIN_RESOLVED}/admin.html"
+    echo "  ✓ Release Hub:  http://${DOMAIN_RESOLVED}/releasehub/"
+    echo "  直连 Node（排障用）: http://$SERVER_IP:$PORT"
+    echo "  启用 HTTPS：确保 DNS 已解析后重新运行: sudo bash deploy.sh"
+    echo "           或: certbot certonly --nginx -d $DOMAIN_RESOLVED（成功后再次运行 deploy.sh）"
   else
-    echo "❌ Nginx：状态异常"
+    echo "  ✓ 首页（HTTP）: http://$SERVER_IP/"
+    echo "  ✓ 管理后台:     http://$SERVER_IP/admin.html"
+    echo "  ✓ Release Hub:  http://$SERVER_IP/releasehub/"
+    echo "  启用 HTTPS：设置 DOMAIN=你的域名 后重新运行: DOMAIN=example.com sudo bash deploy.sh"
   fi
+else
+  echo "  ⚠ Nginx 未安装/跳过；直连: http://127.0.0.1:${PORT}/"
 fi
-
-[ -f "$INSTALL_DIR/.env" ] && echo "✅ 配置：$INSTALL_DIR/.env（含 LISTEN_HOST）" || echo "❌ 配置：缺少 $INSTALL_DIR/.env"
-
-echo "⚠ 防火墙：脚本不执行 ufw；公网一般只放行 80，勿映射 ${APP_PORT} 到公网。"
 
 echo ""
-echo "访问与路径"
-echo "────────────────────────────────────────"
-printf "  %-16s %s\n" "本机首页" "http://127.0.0.1:${APP_PORT}/"
-printf "  %-16s %s\n" "本机后台" "http://127.0.0.1:${APP_PORT}/admin.html"
-if [ "${NGINX_RELOAD_OK:-0}" -eq 1 ]; then
-  if [ "${HP_HOMEPORTAL_DEFAULT:-0}" -eq 1 ]; then
-    printf "  %-16s %s\n" "公网:80" "未匹配其他 server 时落到本站（已启用 default_server）"
-  else
-    printf "  %-16s %s\n" "公网:80" "请使用与 HOMEPORTAL_SERVER_NAME 一致的域名访问"
-  fi
-fi
-printf "  %-16s %s\n" "本机排障" "SSH 后: curl -sI http://127.0.0.1:${APP_PORT}/"
-
+echo "  与 Release Hub 共存说明："
+echo "    HomePortal  → ${DOMAIN_RESOLVED:-$SERVER_IP}/ （根路径，直接域名访问）"
+echo "    Release Hub → ${DOMAIN_RESOLVED:-$SERVER_IP}/releasehub/ （子路径）"
+echo "    共用 Nginx server 块: $MAIN_NGINX_CONF"
+echo "    各自 location 片段:   /etc/nginx/conf.d/locations/"
 echo ""
-echo "💡 温馨提醒"
-echo "  · 默认密码 rainy，登录后请改为强密码；JWT/密码见 $INSTALL_DIR/.env"
-echo "  · 勿将 LISTEN_HOST 改为 0.0.0.0 除非清楚风险；生产环境应仅 127.0.0.1 + Nginx。"
-echo "  · 多站点：请设 HOMEPORTAL_SERVER_NAME=你的域名；勿与其它 vhost 冲突。统一域名多路径：UNIFIED_NGINX=1 + UNIFIED_SERVER_NAME + HOMEPORTAL_NGINX_PREFIX（默认 home）。"
-echo "  · 若单机只要一站且需接管 IP 访问可设 HOMEPORTAL_FORCE_DEFAULT_SERVER=1。"
-echo "  · 常用：systemctl status $SERVICE_NAME · journalctl -u $SERVICE_NAME -f · sudo systemctl restart $SERVICE_NAME"
+echo "  常用命令:"
+echo "    systemctl status $SERVICE_NAME"
+echo "    journalctl -u $SERVICE_NAME -f"
+echo "    systemctl restart $SERVICE_NAME"
+echo "  ⚠ 防火墙：脚本已自动放行 80/443（若有 ufw）；勿将 ${PORT} 端口映射到公网。"
 echo ""
