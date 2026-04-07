@@ -116,7 +116,7 @@ if [ -f "$INSTALL_DIR/.env" ]; then
   _hp_sn_preview="${_hp_sn_preview//\"/}"
   _hp_sn_preview="${_hp_sn_preview//\'/}"
   _hp_sn_preview="${_hp_sn_preview//$'\r'/}"
-  _hp_sn_preview_norm="$(echo "${_hp_sn_preview:-}" | tr -cd '-a-zA-Z0-9._ ' | xargs)"
+  _hp_sn_preview_norm="$(echo "${_hp_sn_preview:-}" | tr -cd -- '-a-zA-Z0-9._ ' | xargs)"
 fi
 
 if [ -n "${HOMEPORTAL_SERVER_NAME:-}" ]; then
@@ -133,7 +133,7 @@ elif [ -t 0 ]; then
   case "${_hp_has_pub}" in
     [yY][eE][sS]|[yY])
       read -r -p "请输入域名（空格分隔多个，如 www.example.com example.com）: " _hp_dom_in
-      HP_EARLY_SRV="$(echo "${_hp_dom_in:-}" | tr -cd '-a-zA-Z0-9._ ' | xargs)"
+      HP_EARLY_SRV="$(echo "${_hp_dom_in:-}" | tr -cd -- '-a-zA-Z0-9._ ' | xargs)"
       [ -z "$HP_EARLY_SRV" ] && HP_EARLY_SRV="home-portal.local"
       ;;
     *)
@@ -237,7 +237,7 @@ elif [ -t 0 ]; then
 else
   HOMEPORTAL_SRV_NAME="home-portal.local"
 fi
-HOMEPORTAL_SRV_NAME="$(echo "${HOMEPORTAL_SRV_NAME:-home-portal.local}" | tr -cd '-a-zA-Z0-9._ ' | xargs)"
+HOMEPORTAL_SRV_NAME="$(echo "${HOMEPORTAL_SRV_NAME:-home-portal.local}" | tr -cd -- '-a-zA-Z0-9._ ' | xargs)"
 [ -z "$HOMEPORTAL_SRV_NAME" ] && HOMEPORTAL_SRV_NAME="home-portal.local"
 
 homeportal_env_sync_server_name() {
