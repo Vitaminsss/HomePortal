@@ -7,8 +7,10 @@
 # 首次运行：交互设置管理员密码（默认 rainy）、生成 JWT、写 .env
 # 非首次：跳过密码向导，更新依赖并刷新 systemd / Nginx
 # 依赖：Node.js；脚本内 ensure_pnpm（corepack / npm -g）
-# Nginx：检测其他站点是否占用 default_server；可交互是否移除并让本站点成为 default
-#   非交互：HOMEPORTAL_DEFAULT_SERVER=replace|keep（默认 keep，不改动他站）
+# Nginx：多站并存 — 不使用 default_server；须配置明确的 server_name（HOMEPORTAL_SERVER_NAME / 交互）
+#   UNIFIED_NGINX=1  与 Release Hub 等同域名不同路径：片段 unified.d/20-home-portal.conf，共用 unified-apps.conf
+#   UNIFIED_SERVER_NAME、HOMEPORTAL_NGINX_PREFIX（默认 home）→ 对外 https://域名/home/
+#   可选：HOMEPORTAL_FORCE_DEFAULT_SERVER=1 时仍尝试接管 default（不推荐多站环境）
 # 域名：部署前（pnpm 之前）交互询问是否有公网域名；HOMEPORTAL_SERVER_NAME 写入 .env；HTTPS 若存在 Let's Encrypt 则写 :443
 # 开头：停同名 systemd/PM2；结尾 ✅/❌；不自动 ufw；LISTEN_HOST=127.0.0.1
 # ============================================
@@ -19,6 +21,10 @@ INSTALL_DIR="$SCRIPT_DIR"
 MARKER="$INSTALL_DIR/.homeportal-deploy-init"
 SERVICE_NAME="home-portal"
 NGINX_SITE="/etc/nginx/sites-available/home-portal"
+UNIFIED_NGINX="${UNIFIED_NGINX:-0}"
+UNIFIED_SNIPPET_DIR="${UNIFIED_SNIPPET_DIR:-/etc/nginx/snippets/unified.d}"
+UNIFIED_SITE_AVAILABLE="${UNIFIED_SITE_FILE:-/etc/nginx/sites-available/unified-apps.conf}"
+UNIFIED_SITE_LINK="${UNIFIED_SITE_ENABLED_NAME:-unified-apps}"
 NODE_BIN="$(command -v node || true)"
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -116,7 +122,7 @@ if [ -f "$INSTALL_DIR/.env" ]; then
   _hp_sn_preview="${_hp_sn_preview//\"/}"
   _hp_sn_preview="${_hp_sn_preview//\'/}"
   _hp_sn_preview="${_hp_sn_preview//$'\r'/}"
-  _hp_sn_preview_norm="$(echo "${_hp_sn_preview:-}" | tr -cd -- '-a-zA-Z0-9._ ' | xargs)"
+  _hp_sn_preview_norm="$(echo "${_hp_sn_preview:-}" | tr -cd '-a-zA-Z0-9._ ' | xargs)"
 fi
 
 if [ -n "${HOMEPORTAL_SERVER_NAME:-}" ]; then
@@ -133,7 +139,7 @@ elif [ -t 0 ]; then
   case "${_hp_has_pub}" in
     [yY][eE][sS]|[yY])
       read -r -p "请输入域名（空格分隔多个，如 www.example.com example.com）: " _hp_dom_in
-      HP_EARLY_SRV="$(echo "${_hp_dom_in:-}" | tr -cd -- '-a-zA-Z0-9._ ' | xargs)"
+      HP_EARLY_SRV="$(echo "${_hp_dom_in:-}" | tr -cd '-a-zA-Z0-9._ ' | xargs)"
       [ -z "$HP_EARLY_SRV" ] && HP_EARLY_SRV="home-portal.local"
       ;;
     *)
@@ -168,18 +174,6 @@ if [ ! -f "$MARKER" ]; then
   echo ""
   [ -z "${HPWD:-}" ] && HPWD=rainy
 
-  # 浏览器标签页标题：可部署前设 PORTAL_TITLE=名称 sudo bash deploy.sh；交互时询问
-  WIZ_PORTAL_TITLE="指引页"
-  if [ -n "${PORTAL_TITLE:-}" ]; then
-    WIZ_PORTAL_TITLE="${PORTAL_TITLE}"
-  elif [ -t 0 ]; then
-    echo ""
-    read -r -p "浏览器标签页标题（站点名称，回车=指引页）: " _wiz_pt
-    [ -n "${_wiz_pt:-}" ] && WIZ_PORTAL_TITLE="$_wiz_pt"
-  fi
-  WIZ_PORTAL_TITLE="$(echo "${WIZ_PORTAL_TITLE:-}" | xargs)"
-  [ -z "$WIZ_PORTAL_TITLE" ] && WIZ_PORTAL_TITLE="指引页"
-
   # 域名已在 pnpm 之前问过（HP_EARLY_SRV）；无则占位
   WIZ_SRV="${HP_EARLY_SRV:-home-portal.local}"
   [ -z "$WIZ_SRV" ] && WIZ_SRV="home-portal.local"
@@ -192,7 +186,7 @@ if [ ! -f "$MARKER" ]; then
     echo "LISTEN_HOST=127.0.0.1"
     printf 'ADMIN_PASSWORD=%q\n' "$HPWD"
     echo "JWT_SECRET=$JWT_SECRET_VALUE"
-    printf 'PORTAL_TITLE=%q\n' "$WIZ_PORTAL_TITLE"
+    echo "PORTAL_TITLE=指引页"
     printf 'HOMEPORTAL_SERVER_NAME=%q\n' "$WIZ_SRV"
   } > "$INSTALL_DIR/.env"
 
@@ -210,7 +204,7 @@ if [ ! -f "$MARKER" ]; then
 
   echo ""
   echo "已写入: $INSTALL_DIR/.env"
-  echo "二次修改密码、标签页标题（PORTAL_TITLE）或 JWT：编辑该文件后执行:"
+  echo "二次修改密码或 JWT：编辑该文件后执行:"
   echo "  sudo systemctl restart $SERVICE_NAME"
   echo ""
 elif [ ! -f "$INSTALL_DIR/.env" ]; then
@@ -249,8 +243,22 @@ elif [ -t 0 ]; then
 else
   HOMEPORTAL_SRV_NAME="home-portal.local"
 fi
-HOMEPORTAL_SRV_NAME="$(echo "${HOMEPORTAL_SRV_NAME:-home-portal.local}" | tr -cd -- '-a-zA-Z0-9._ ' | xargs)"
+HOMEPORTAL_SRV_NAME="$(echo "${HOMEPORTAL_SRV_NAME:-home-portal.local}" | tr -cd '-a-zA-Z0-9._ ' | xargs)"
 [ -z "$HOMEPORTAL_SRV_NAME" ] && HOMEPORTAL_SRV_NAME="home-portal.local"
+
+HOMEPORTAL_PATH_SLUG=""
+if [ "$UNIFIED_NGINX" = "1" ]; then
+  _uun="$(echo "${UNIFIED_SERVER_NAME:-}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  if [ -z "$_uun" ]; then
+    echo "错误: UNIFIED_NGINX=1 时必须设置 UNIFIED_SERVER_NAME（与 Release Hub 共用，如 www.example.com）" >&2
+    exit 1
+  fi
+  HOMEPORTAL_SRV_NAME="$_uun"
+  HOMEPORTAL_PATH_SLUG="$(echo "${HOMEPORTAL_NGINX_PREFIX:-home}" | sed 's/^\/\+//;s/\/\+$//')"
+  HOMEPORTAL_PATH_SLUG="$(echo "$HOMEPORTAL_PATH_SLUG" | tr -cd 'a-zA-Z0-9_-')"
+  [ -z "$HOMEPORTAL_PATH_SLUG" ] && HOMEPORTAL_PATH_SLUG="home"
+  echo "▸ 统一 Nginx：server_name=$HOMEPORTAL_SRV_NAME · 对外路径 /${HOMEPORTAL_PATH_SLUG}/ · HOMEPORTAL_BASE_PATH 将写入 .env"
+fi
 
 homeportal_env_sync_server_name() {
   [ ! -f "$INSTALL_DIR/.env" ] && return 0
@@ -262,6 +270,21 @@ homeportal_env_sync_server_name() {
   chmod 600 "$INSTALL_DIR/.env" 2>/dev/null || true
 }
 homeportal_env_sync_server_name
+
+homeportal_env_sync_base_path() {
+  [ ! -f "$INSTALL_DIR/.env" ] && return 0
+  _tmp="$(mktemp)"
+  if [ "$UNIFIED_NGINX" = "1" ] && [ -n "${HOMEPORTAL_PATH_SLUG:-}" ]; then
+    grep -vE '^[[:space:]]*HOMEPORTAL_BASE_PATH=' "$INSTALL_DIR/.env" > "$_tmp" 2>/dev/null || true
+    printf 'HOMEPORTAL_BASE_PATH=/%s\n' "$HOMEPORTAL_PATH_SLUG" >> "$_tmp"
+  else
+    grep -vE '^[[:space:]]*HOMEPORTAL_BASE_PATH=' "$INSTALL_DIR/.env" > "$_tmp" 2>/dev/null || true
+  fi
+  mv "$_tmp" "$INSTALL_DIR/.env"
+  chown "$RUN_USER:$RUN_USER" "$INSTALL_DIR/.env" 2>/dev/null || true
+  chmod 600 "$INSTALL_DIR/.env" 2>/dev/null || true
+}
+homeportal_env_sync_base_path
 
 # 旧 .env 无 LISTEN_HOST 时补全，与 server 默认仅监听本机一致
 if [ -f "$INSTALL_DIR/.env" ] && ! grep -qE '^[[:space:]]*LISTEN_HOST=' "$INSTALL_DIR/.env" 2>/dev/null; then
@@ -305,62 +328,101 @@ systemctl is-active --quiet "$SERVICE_NAME" && SYSTEMD_OK=1
 
 echo "▸ systemd：已启用并启动 $SERVICE_NAME（监听 127.0.0.1:${APP_PORT}，开机自启）"
 
+ensure_unified_nginx_umbrella_http() {
+  local sn="$1"
+  mkdir -p "$UNIFIED_SNIPPET_DIR"
+  if [ ! -f "$UNIFIED_SITE_AVAILABLE" ]; then
+    tee "$UNIFIED_SITE_AVAILABLE" > /dev/null <<UMB
+# 统一多应用 — 首次生成；子应用在 ${UNIFIED_SNIPPET_DIR} 下维护片段
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${sn};
+
+    client_max_body_size 500M;
+    client_body_timeout 300s;
+
+    include ${UNIFIED_SNIPPET_DIR}/*.conf;
+}
+UMB
+  fi
+  ln -sf "$UNIFIED_SITE_AVAILABLE" "/etc/nginx/sites-enabled/${UNIFIED_SITE_LINK}.conf"
+}
+
+write_homeportal_unified_snippet() {
+  mkdir -p "$UNIFIED_SNIPPET_DIR"
+  tee "${UNIFIED_SNIPPET_DIR}/20-home-portal.conf" > /dev/null <<HPS
+# HomePortal — 片段（deploy.sh）
+location /${HOMEPORTAL_PATH_SLUG}/ {
+    proxy_pass http://127.0.0.1:${APP_PORT}/;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade \$http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host \$host;
+    proxy_set_header X-Real-IP \$remote_addr;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto \$scheme;
+    proxy_read_timeout 300s;
+    proxy_send_timeout 300s;
+}
+HPS
+}
+
 # ---------- Nginx ----------
 NGINX_RELOAD_OK=0
 NGINX_NOT_INSTALLED=0
-# server_name 使用唯一占位名（默认 home-portal.local）；公网域名请设 HOMEPORTAL_SERVER_NAME
-DEFAULT_SERVER_OTHERS=()
-if [ -d /etc/nginx/sites-enabled ]; then
-  for _nf in /etc/nginx/sites-enabled/*; do
-    [ -e "$_nf" ] || continue
-    case "$(basename "$_nf" 2>/dev/null || echo "")" in
-      home-portal) continue ;;
-    esac
-    if grep -qE 'listen[[:space:]]+[^;]*default_server' "$_nf" 2>/dev/null; then
-      DEFAULT_SERVER_OTHERS+=("$_nf")
-    fi
-  done
-fi
-
+# 多站并存：默认仅 listen 80（无 default_server）；仅当 HOMEPORTAL_FORCE_DEFAULT_SERVER=1 时尝试接管 default
 HP_HOMEPORTAL_DEFAULT=0
-if [ "${#DEFAULT_SERVER_OTHERS[@]}" -eq 0 ]; then
-  HP_HOMEPORTAL_DEFAULT=1
-else
-  echo ""
-  echo "▸ Nginx：下列已启用配置中含有 default_server（未匹配的 Host / 直连 IP:80 时会落到该站点，易表现为「仍是 Nginx 默认页」或错站）："
-  for _nf in "${DEFAULT_SERVER_OTHERS[@]}"; do
-    echo "    - $_nf"
-  done
-  if [ -t 0 ] && [ -z "${HOMEPORTAL_DEFAULT_SERVER+x}" ]; then
-    read -r -p "是否从上述文件中移除 default_server，并将 HomePortal 设为 80 的 default 站点？[y/N] " _hpds
-    case "${_hpds}" in
-      [yY][eE][sS]|[yY]) HP_HOMEPORTAL_DEFAULT=1 ;;
-      *) HP_HOMEPORTAL_DEFAULT=0 ;;
-    esac
-  else
-    case "${HOMEPORTAL_DEFAULT_SERVER:-keep}" in
-      replace|yes|1|true|Y|y) HP_HOMEPORTAL_DEFAULT=1 ;;
-      *) HP_HOMEPORTAL_DEFAULT=0 ;;
-    esac
-    if [ -z "${HOMEPORTAL_DEFAULT_SERVER+x}" ]; then
-      echo "  （非交互：默认不改动他站，等同 HOMEPORTAL_DEFAULT_SERVER=keep；若需接管请设 replace）"
-    fi
-  fi
-  if [ "$HP_HOMEPORTAL_DEFAULT" -eq 1 ]; then
-    for _nf in "${DEFAULT_SERVER_OTHERS[@]}"; do
-      echo "▸ 正在从 $(basename "$_nf") 移除 default_server（备份: ${_nf}.bak.homeportal）..."
-      cp -a "$_nf" "${_nf}.bak.homeportal"
-      sed -i '/^[[:space:]]*listen\>/s/[[:space:]]*default_server//g' "$_nf"
+LISTEN_BLOCK="    listen 80;
+    listen [::]:80;"
+if [ "$UNIFIED_NGINX" != "1" ] && [ "${HOMEPORTAL_FORCE_DEFAULT_SERVER:-0}" = "1" ]; then
+  DEFAULT_SERVER_OTHERS=()
+  if [ -d /etc/nginx/sites-enabled ]; then
+    for _nf in /etc/nginx/sites-enabled/*; do
+      [ -e "$_nf" ] || continue
+      case "$(basename "$_nf" 2>/dev/null || echo "")" in
+        home-portal) continue ;;
+      esac
+      if grep -qE 'listen[[:space:]]+[^;]*default_server' "$_nf" 2>/dev/null; then
+        DEFAULT_SERVER_OTHERS+=("$_nf")
+      fi
     done
   fi
-fi
-
-if [ "$HP_HOMEPORTAL_DEFAULT" -eq 1 ]; then
-  LISTEN_BLOCK="    listen 80 default_server;
+  if [ "${#DEFAULT_SERVER_OTHERS[@]}" -eq 0 ]; then
+    HP_HOMEPORTAL_DEFAULT=1
+    LISTEN_BLOCK="    listen 80 default_server;
     listen [::]:80 default_server;"
-else
-  LISTEN_BLOCK="    listen 80;
-    listen [::]:80;"
+  else
+    echo ""
+    echo "▸ HOMEPORTAL_FORCE_DEFAULT_SERVER=1：下列配置含 default_server，需移除后本站点才能设为 default："
+    for _nf in "${DEFAULT_SERVER_OTHERS[@]}"; do
+      echo "    - $_nf"
+    done
+    if [ -t 0 ] && [ -z "${HOMEPORTAL_DEFAULT_SERVER+x}" ]; then
+      read -r -p "是否从上述文件中移除 default_server，并将 HomePortal 设为 80 的 default？[y/N] " _hpds
+      case "${_hpds}" in
+        [yY][eE][sS]|[yY]) HP_HOMEPORTAL_DEFAULT=1 ;;
+        *) HP_HOMEPORTAL_DEFAULT=0 ;;
+      esac
+    else
+      case "${HOMEPORTAL_DEFAULT_SERVER:-keep}" in
+        replace|yes|1|true|Y|y) HP_HOMEPORTAL_DEFAULT=1 ;;
+        *) HP_HOMEPORTAL_DEFAULT=0 ;;
+      esac
+      if [ -z "${HOMEPORTAL_DEFAULT_SERVER+x}" ]; then
+        echo "  （非交互：等同 HOMEPORTAL_DEFAULT_SERVER=keep；若需接管请设 replace）"
+      fi
+    fi
+    if [ "$HP_HOMEPORTAL_DEFAULT" -eq 1 ]; then
+      for _nf in "${DEFAULT_SERVER_OTHERS[@]}"; do
+        echo "▸ 正在从 $(basename "$_nf") 移除 default_server（备份: ${_nf}.bak.homeportal）..."
+        cp -a "$_nf" "${_nf}.bak.homeportal"
+        sed -i '/^[[:space:]]*listen\>/s/[[:space:]]*default_server//g' "$_nf"
+      done
+      LISTEN_BLOCK="    listen 80 default_server;
+    listen [::]:80 default_server;"
+    fi
+  fi
 fi
 
 # HTTPS：在 /etc/letsencrypt/live/ 下查找与 server_name 匹配的证书并生成 :443 反代（浏览器默认走 https）
@@ -404,7 +466,7 @@ HP_SSL_EXTRA=""
 "
 
 HP_SSL_SERVER_BLOCK=""
-if [ -n "$HP_LE_CERT" ]; then
+if [ "$UNIFIED_NGINX" != "1" ] && [ -n "$HP_LE_CERT" ]; then
   HP_SSL_SERVER_BLOCK="$(cat <<SSLBLK
 
 server {
@@ -433,9 +495,22 @@ SSLBLK
 fi
 
 if command -v nginx >/dev/null 2>&1; then
-  tee "$NGINX_SITE" > /dev/null <<NGINX
-# HomePortal — 由 deploy.sh 生成
-# default_server：见脚本内「他站 default」检测；HTTPS：若存在 Let's Encrypt 证书则自动生成下方 :443 块
+  if [ "$UNIFIED_NGINX" = "1" ]; then
+    ensure_unified_nginx_umbrella_http "$HOMEPORTAL_SRV_NAME"
+    write_homeportal_unified_snippet
+    rm -f /etc/nginx/sites-enabled/home-portal
+    if nginx -t; then
+      systemctl reload nginx 2>/dev/null || service nginx reload 2>/dev/null || true
+      NGINX_RELOAD_OK=1
+      echo "▸ 统一 Nginx：已写入 ${UNIFIED_SNIPPET_DIR}/20-home-portal.conf · 主配置 $UNIFIED_SITE_AVAILABLE"
+      echo "  访问: http://${HOMEPORTAL_SRV_NAME}/${HOMEPORTAL_PATH_SLUG}/ （HTTPS 请对 ${UNIFIED_SITE_AVAILABLE##*/} 执行 certbot）"
+    else
+      echo "警告: nginx -t 失败，请检查片段与 $UNIFIED_SITE_AVAILABLE" >&2
+    fi
+  else
+    tee "$NGINX_SITE" > /dev/null <<NGINX
+# HomePortal — 由 deploy.sh 生成（多站默认无 default_server；见 HOMEPORTAL_FORCE_DEFAULT_SERVER）
+# HTTPS：若存在 Let's Encrypt 证书则自动生成下方 :443 块
 server {
 ${LISTEN_BLOCK}
     server_name ${HOMEPORTAL_SRV_NAME};
@@ -456,35 +531,33 @@ ${LISTEN_BLOCK}
 ${HP_SSL_SERVER_BLOCK}
 NGINX
 
-  if [ -L /etc/nginx/sites-enabled/default ]; then
-    rm -f /etc/nginx/sites-enabled/default
-  fi
-  ln -sf "$NGINX_SITE" /etc/nginx/sites-enabled/home-portal
+    ln -sf "$NGINX_SITE" /etc/nginx/sites-enabled/home-portal
 
-  if nginx -t; then
-    systemctl reload nginx 2>/dev/null || service nginx reload 2>/dev/null || true
-    NGINX_RELOAD_OK=1
-    _hp_ssl_note=""
-    [ -n "$HP_LE_CERT" ] && _hp_ssl_note=" · HTTPS:443 已用证书反代（${HP_LE_CERT}）"
-    if [ "$HP_HOMEPORTAL_DEFAULT" -eq 1 ]; then
-      echo "▸ Nginx：本站点为 80 的 default_server · server_name ${HOMEPORTAL_SRV_NAME} · → 127.0.0.1:${APP_PORT}${_hp_ssl_note}（已 reload）"
-    else
-      echo "▸ Nginx：未使用 default_server · server_name ${HOMEPORTAL_SRV_NAME} · → 127.0.0.1:${APP_PORT}${_hp_ssl_note}（已 reload）"
-      echo ""
-      echo "  提示：用域名访问时请保证浏览器 Host 与 server_name 一致，或执行本脚本时选择接管 default。"
-      if [ -z "$HP_LE_CERT" ]; then
-        echo "  HTTPS：未检测到 Let's Encrypt 证书路径时未写 :443；若仍见 Nginx 默认页，请先申请证书后重跑本脚本。"
+    if nginx -t; then
+      systemctl reload nginx 2>/dev/null || service nginx reload 2>/dev/null || true
+      NGINX_RELOAD_OK=1
+      _hp_ssl_note=""
+      [ -n "$HP_LE_CERT" ] && _hp_ssl_note=" · HTTPS:443 已用证书反代（${HP_LE_CERT}）"
+      if [ "$HP_HOMEPORTAL_DEFAULT" -eq 1 ]; then
+        echo "▸ Nginx：本站点为 80 的 default_server · server_name ${HOMEPORTAL_SRV_NAME} · → 127.0.0.1:${APP_PORT}${_hp_ssl_note}（已 reload）"
+      else
+        echo "▸ Nginx：未使用 default_server · server_name ${HOMEPORTAL_SRV_NAME} · → 127.0.0.1:${APP_PORT}${_hp_ssl_note}（已 reload）"
+        echo ""
+        echo "  提示：请用与 server_name 一致的域名访问；单机多站勿复用域名。"
+        if [ -z "$HP_LE_CERT" ]; then
+          echo "  HTTPS：未检测到 Let's Encrypt 证书路径时未写 :443；需要 HTTPS 时请 certbot 签发后重跑本脚本。"
+        fi
       fi
-    fi
-    if [ -z "$HP_LE_CERT" ] && [ "$HOMEPORTAL_SRV_NAME" != "home-portal.local" ]; then
-      echo ""
-      echo "▸ 未找到与 server_name 匹配的 /etc/letsencrypt/live/ 证书，HTTPS 可能仍由其他站点处理。"
-      echo "  可先: sudo certbot certonly --nginx -d www.你的域名.com   然后再次执行: sudo bash deploy.sh"
-    fi
-  else
-    echo "警告: nginx -t 失败，请检查: $NGINX_SITE" >&2
-    if grep -q "443" "$NGINX_SITE" 2>/dev/null; then
-      echo "  若提示 conflicting server name 或 duplicate listen，请检查 sites-enabled 是否已有同名域名的其它 SSL 配置，可暂时禁用冲突文件后重试。" >&2
+      if [ -z "$HP_LE_CERT" ] && [ "$HOMEPORTAL_SRV_NAME" != "home-portal.local" ]; then
+        echo ""
+        echo "▸ 未找到与 server_name 匹配的 /etc/letsencrypt/live/ 证书，HTTPS 可能仍由其他站点处理。"
+        echo "  可先: sudo certbot certonly --nginx -d www.你的域名.com   然后再次执行: sudo bash deploy.sh"
+      fi
+    else
+      echo "警告: nginx -t 失败，请检查: $NGINX_SITE" >&2
+      if grep -q "443" "$NGINX_SITE" 2>/dev/null; then
+        echo "  若提示 conflicting server name 或 duplicate listen，请检查 sites-enabled 是否已有同名域名的其它 SSL 配置，可暂时禁用冲突文件后重试。" >&2
+      fi
     fi
   fi
 else
@@ -523,12 +596,12 @@ echo ""
 echo "访问与路径"
 echo "────────────────────────────────────────"
 printf "  %-16s %s\n" "本机首页" "http://127.0.0.1:${APP_PORT}/"
-printf "  %-16s %s\n" "本机后台" "http://127.0.0.1:${APP_PORT}/#admin"
+printf "  %-16s %s\n" "本机后台" "http://127.0.0.1:${APP_PORT}/admin.html"
 if [ "${NGINX_RELOAD_OK:-0}" -eq 1 ]; then
   if [ "${HP_HOMEPORTAL_DEFAULT:-0}" -eq 1 ]; then
-    printf "  %-16s %s\n" "公网:80" "未匹配其他 server 时将到本站（default_server）"
+    printf "  %-16s %s\n" "公网:80" "未匹配其他 server 时落到本站（已启用 default_server）"
   else
-    printf "  %-16s %s\n" "公网:80" "请使用与 server_name 一致的域名访问，或重跑脚本并选择接管 default"
+    printf "  %-16s %s\n" "公网:80" "请使用与 HOMEPORTAL_SERVER_NAME 一致的域名访问"
   fi
 fi
 printf "  %-16s %s\n" "本机排障" "SSH 后: curl -sI http://127.0.0.1:${APP_PORT}/"
@@ -537,6 +610,7 @@ echo ""
 echo "💡 温馨提醒"
 echo "  · 默认密码 rainy，登录后请改为强密码；JWT/密码见 $INSTALL_DIR/.env"
 echo "  · 勿将 LISTEN_HOST 改为 0.0.0.0 除非清楚风险；生产环境应仅 127.0.0.1 + Nginx。"
-echo "  · 多站点：请设 HOMEPORTAL_SERVER_NAME=你的域名，或部署时选择是否将 HomePortal 设为 default_server。"
+echo "  · 多站点：请设 HOMEPORTAL_SERVER_NAME=你的域名；勿与其它 vhost 冲突。统一域名多路径：UNIFIED_NGINX=1 + UNIFIED_SERVER_NAME + HOMEPORTAL_NGINX_PREFIX（默认 home）。"
+echo "  · 若单机只要一站且需接管 IP 访问可设 HOMEPORTAL_FORCE_DEFAULT_SERVER=1。"
 echo "  · 常用：systemctl status $SERVICE_NAME · journalctl -u $SERVICE_NAME -f · sudo systemctl restart $SERVICE_NAME"
 echo ""

@@ -527,23 +527,6 @@
       text-align: center; padding: 60px 20px;
       color: var(--text-2);
     }
-
-    /* 管理后台：同页 hash #admin，地址栏为 /#admin */
-    .admin-route {
-      position: fixed;
-      inset: 0;
-      z-index: 100;
-      background: var(--bg);
-    }
-    .admin-route[hidden] {
-      display: none !important;
-    }
-    .admin-route__frame {
-      width: 100%;
-      height: 100%;
-      border: 0;
-      display: block;
-    }
   </style>
 </head>
 <body>
@@ -585,7 +568,7 @@
           </svg>
           分享
         </button>
-        <a href="/#admin" class="btn-outline">
+        <a href="/admin.html" class="btn-outline">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/>
           </svg>
@@ -618,13 +601,21 @@
 
   </div>
 
-  <div id="adminRoute" class="admin-route" hidden aria-hidden="true">
-    <iframe id="adminFrame" class="admin-route__frame" title="管理后台" src="about:blank"></iframe>
-  </div>
-
   <div id="pageToast" role="status" aria-live="polite"></div>
 
   <script>
+    // 与 Nginx 子路径一致（如 /home）；根路径部署时为空
+    (function () {
+      const m = location.pathname.match(/^(\/[^/]+)/);
+      window.__HP_API_PREFIX__ = (m && m[1] !== '/') ? m[1] : '';
+    })();
+    function hpApi(p) {
+      const x = String(p || '');
+      const pref = window.__HP_API_PREFIX__ || '';
+      if (!pref) return x.startsWith('/') ? x : '/' + x;
+      return (pref + (x.startsWith('/') ? x : '/' + x)).replace(/\/+/g, '/');
+    }
+
     // ── Clock ─────────────────────────────────────────────────────────────────
     const clockEl = document.getElementById('clock');
     const greetingEl = document.getElementById('heroGreeting');
@@ -644,44 +635,7 @@
     }
     tick(); setInterval(tick, 1000);
 
-    let portalTabTitle = '指引页';
-    function syncDocumentTitle() {
-      document.title = (location.hash === '#admin')
-        ? (portalTabTitle + ' — 管理')
-        : portalTabTitle;
-    }
-    fetch('/api/config')
-      .then(r => r.json())
-      .then(cfg => {
-        if (cfg && cfg.title) portalTabTitle = cfg.title;
-        syncDocumentTitle();
-      })
-      .catch(() => { syncDocumentTitle(); });
-
-    // ── Hash 路由：/#admin 内嵌管理后台（地址栏不显示 /admin.html）────────────────
-    const adminRouteEl = document.getElementById('adminRoute');
-    const adminFrameEl = document.getElementById('adminFrame');
-    let adminFrameLoaded = false;
-    function applyAdminHash() {
-      const show = location.hash === '#admin';
-      if (!adminRouteEl || !adminFrameEl) return;
-      if (show) {
-        adminRouteEl.hidden = false;
-        adminRouteEl.setAttribute('aria-hidden', 'false');
-        if (!adminFrameLoaded) {
-          adminFrameEl.src = '/admin.html?embed=1';
-          adminFrameLoaded = true;
-        }
-        document.body.style.overflow = 'hidden';
-      } else {
-        adminRouteEl.hidden = true;
-        adminRouteEl.setAttribute('aria-hidden', 'true');
-        document.body.style.overflow = '';
-      }
-      syncDocumentTitle();
-    }
-    window.addEventListener('hashchange', applyAdminHash);
-    applyAdminHash();
+    document.title = '指引页';
 
     // ── 全页光晕跟随鼠标 ───────────────────────────────────────────────────────
     const pageGlow = document.getElementById('pageGlow');
@@ -825,7 +779,7 @@
             <div class="empty-icon">🔭</div>
             <h3>暂无服务</h3>
             <p>还没有添加任何服务链接。</p>
-            <a href="/#admin">前往管理后台添加 →</a>
+            <a href="${hpApi('/admin.html')}">前往管理后台添加 →</a>
           </div>`;
         return;
       }
@@ -846,7 +800,7 @@
     });
 
     // Load
-    fetch('/api/services')
+    fetch(hpApi('/api/services'))
       .then(r => r.json())
       .then(data => { all = data; render(all); })
       .catch(() => render([]));

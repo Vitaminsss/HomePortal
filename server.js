@@ -11,26 +11,18 @@ const PORT = parseInt(process.env.PORT, 10) || 3000;
 // 生产环境建议 127.0.0.1 + Nginx 反代；局域网调试可设 LISTEN_HOST=0.0.0.0
 const LISTEN_HOST = process.env.LISTEN_HOST || '127.0.0.1';
 
+// 统一 Nginx 子路径（如 /home）时由 deploy 写入；与 location /home/ 对应
+const rawBase = (process.env.HOMEPORTAL_BASE_PATH || '').trim();
+const BASE_PATH = rawBase.replace(/\/+$/, '') || '';
+
 const DATA_FILE      = path.join(__dirname, 'data', 'services.json');
 const JWT_SECRET     = process.env.JWT_SECRET     || 'homeportal-secret-change-me';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'rainy';
 const PORTAL_TITLE   = process.env.PORTAL_TITLE   || '指引页';
 
-app.use(cors());
-app.use(express.json());
+const r = express.Router();
 
-// 管理后台对外地址用 /#admin；iframe 内嵌需 ?embed=1 否则重定向会与嵌套冲突
-app.get('/admin.html', (req, res) => {
-  if (req.query.embed === '1') {
-    return res.sendFile(path.join(__dirname, 'public', 'admin.html'));
-  }
-  res.redirect(302, '/#admin');
-});
-app.get('/admin', (_req, res) => {
-  res.redirect(302, '/#admin');
-});
-
-app.use(express.static(path.join(__dirname, 'public')));
+r.use(express.static(path.join(__dirname, 'public')));
 
 // ── Data helpers ──────────────────────────────────────────────────────────────
 
@@ -67,12 +59,12 @@ function auth(req, res, next) {
 // ── Routes ────────────────────────────────────────────────────────────────────
 
 // Portal config (public)
-app.get('/api/config', (_req, res) => {
+r.get('/api/config', (_req, res) => {
   res.json({ title: PORTAL_TITLE });
 });
 
 // Login
-app.post('/api/auth', (req, res) => {
+r.post('/api/auth', (req, res) => {
   const { password } = req.body || {};
   if (!password || password !== ADMIN_PASSWORD) {
     return res.status(401).json({ error: '密码错误' });
@@ -82,13 +74,13 @@ app.post('/api/auth', (req, res) => {
 });
 
 // List services (public)
-app.get('/api/services', (_req, res) => {
+r.get('/api/services', (_req, res) => {
   const services = load().sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999));
   res.json(services);
 });
 
 // Add service
-app.post('/api/services', auth, (req, res) => {
+r.post('/api/services', auth, (req, res) => {
   const { name, url, description, displayUrl, icon, color, tags, status } = req.body || {};
   if (!name || !url) return res.status(400).json({ error: 'name 和 url 为必填项' });
 
@@ -113,7 +105,7 @@ app.post('/api/services', auth, (req, res) => {
 });
 
 // Update service
-app.put('/api/services/:id', auth, (req, res) => {
+r.put('/api/services/:id', auth, (req, res) => {
   const services = load();
   const idx = services.findIndex(s => s.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: '服务不存在' });
@@ -127,7 +119,7 @@ app.put('/api/services/:id', auth, (req, res) => {
 });
 
 // Delete service
-app.delete('/api/services/:id', auth, (req, res) => {
+r.delete('/api/services/:id', auth, (req, res) => {
   let services = load();
   const before = services.length;
   services = services.filter(s => s.id !== req.params.id);
@@ -139,7 +131,7 @@ app.delete('/api/services/:id', auth, (req, res) => {
 });
 
 // Reorder services
-app.put('/api/reorder', auth, (req, res) => {
+r.put('/api/reorder', auth, (req, res) => {
   const { ids } = req.body || {};
   if (!Array.isArray(ids)) return res.status(400).json({ error: 'ids 必须为数组' });
 
@@ -160,10 +152,21 @@ app.put('/api/reorder', auth, (req, res) => {
   res.json(reordered);
 });
 
+app.use(cors());
+app.use(express.json());
+
+if (BASE_PATH) {
+  app.use(BASE_PATH, r);
+} else {
+  app.use(r);
+}
+
 // ── Start ─────────────────────────────────────────────────────────────────────
 
+const baseLabel = BASE_PATH || '(根路径)';
 app.listen(PORT, LISTEN_HOST, () => {
-  console.log(`\n  🌐 HomePortal  →  http://${LISTEN_HOST}:${PORT}`);
-  console.log(`  🔧 Admin Panel →  http://${LISTEN_HOST}:${PORT}/#admin`);
-  console.log(`  📁 Data file   →  ${DATA_FILE}\n`);
+  console.log(`\n  🌐 HomePortal  →  http://${LISTEN_HOST}:${PORT}${BASE_PATH || ''}/`);
+  console.log(`  🔧 Admin Panel →  http://${LISTEN_HOST}:${PORT}${BASE_PATH || ''}/admin.html`);
+  console.log(`  📁 Data file   →  ${DATA_FILE}`);
+  console.log(`  📍 BASE_PATH   →  ${baseLabel}\n`);
 });
