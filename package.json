@@ -2,6 +2,7 @@
   "name": "home-portal",
   "version": "1.0.0",
   "description": "服务器导航首页 — 替代 Nginx 默认页",
+  "packageManager": "pnpm@9.15.4",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

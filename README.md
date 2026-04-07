@@ -22,17 +22,21 @@ npm start
 
 ## Linux 一键部署（systemd + Nginx）
 
-在服务器上将本仓库置于任意目录（例如 `/home/你的用户/HomePortal`），**使用普通用户通过 sudo 执行**（以便服务以你的用户运行、npm 可写 `node_modules`）：
+在服务器上将本仓库置于任意目录（例如 `/home/你的用户/HomePortal`），**务必用「登录用户」执行 sudo**（会设置 `SUDO_USER`，脚本才能把目录属主交给该用户，且用 **pnpm** 安装依赖）：
 
 ```bash
 cd HomePortal
 sudo bash deploy.sh
 ```
 
+**不要**在 `sudo su -` 后的纯 root 会话里直接跑脚本（无 `SUDO_USER` 时会退回到用户 `www-data`，且若目录属主不是 root，可能因权限失败）。若仓库目录是 root 解压的（属主 root），脚本会自动 `chown` 给运行用户。
+
+**依赖**：需要已安装 **Node.js**（建议 20 LTS）。脚本会自动安装 **pnpm**（`corepack enable` 或 `npm i -g pnpm`）。可选在仓库中提交 **`pnpm-lock.yaml`**（在开发机执行 `pnpm install` 生成）以便部署时使用 `pnpm install --prod --frozen-lockfile`。
+
 脚本会：
 
 1. **首次运行**：提示设置管理员密码；**默认密码为 `rainy`**，直接回车即采用；并自动生成 `JWT_SECRET`、写入 `.env`、创建标记文件 `.homeportal-deploy-init`（仅首次出现向导）。
-2. **非首次**：跳过密码向导，执行 `npm install --production`、刷新 systemd 与 Nginx。
+2. **非首次**：跳过密码向导，执行 **`pnpm install --prod`**、刷新 systemd 与 Nginx。
 3. 注册并启用 **`home-portal`** systemd 服务（**开机自启**）。
 4. 若已安装 **Nginx**：写入 `sites-available/home-portal`，将 **80 端口**反代到本服务监听端口（默认 `3000`），并禁用默认 `default` 站点（若存在）以避免与 `default_server` 冲突。
 

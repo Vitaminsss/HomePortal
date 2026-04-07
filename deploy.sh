@@ -6,7 +6,8 @@
 #
 # 首次运行：交互设置管理员密码（默认 rainy）、生成 JWT、写 .env
 # 非首次：跳过密码向导，更新依赖并刷新 systemd / Nginx
-# 开头：若已有同名 systemd / PM2 则先停止；结尾：✅/❌ 汇总；不自动 ufw；Node 默认 LISTEN_HOST=127.0.0.1
+# 依赖：Node.js；脚本内 ensure_pnpm（corepack / npm -g）
+# 开头：停同名 systemd/PM2；结尾 ✅/❌；不自动 ufw；LISTEN_HOST=127.0.0.1
 # ============================================
 set -euo pipefail
 
@@ -16,7 +17,6 @@ MARKER="$INSTALL_DIR/.homeportal-deploy-init"
 SERVICE_NAME="home-portal"
 NGINX_SITE="/etc/nginx/sites-available/home-portal"
 NODE_BIN="$(command -v node || true)"
-NPM_BIN="$(command -v npm || true)"
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "本脚本需要 root 以安装 systemd 与 Nginx 配置，请执行:" >&2
@@ -24,16 +24,45 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
-if [ -z "${NODE_BIN}" ] || [ -z "${NPM_BIN}" ]; then
-  echo "错误: 未找到 node 或 npm，请先安装 Node.js (建议 LTS)。" >&2
+if [ -z "${NODE_BIN}" ]; then
+  echo "错误: 未找到 node，请先安装 Node.js 20 LTS（如 NodeSource 或发行版仓库）。" >&2
   exit 1
 fi
 
-# 服务运行用户：来自 sudo 的调用者；纯 root su 时回退 www-data
+# 确保存在 pnpm：优先 corepack，其次 npm 全局安装
+ensure_pnpm() {
+  if command -v pnpm &>/dev/null; then
+    return 0
+  fi
+  if command -v corepack &>/dev/null; then
+    echo "▸ 未检测到 pnpm，通过 corepack 启用..."
+    corepack enable
+    corepack prepare pnpm@latest --activate
+  fi
+  if command -v pnpm &>/dev/null; then
+    return 0
+  fi
+  _npm="$(command -v npm || true)"
+  if [ -n "$_npm" ]; then
+    echo "▸ 通过 npm 全局安装 pnpm..."
+    "$_npm" install -g pnpm
+  fi
+  if command -v pnpm &>/dev/null; then
+    return 0
+  fi
+  echo "错误: 无法安装 pnpm。请安装 Node 18+ 并执行: corepack enable && corepack prepare pnpm@latest --activate" >&2
+  echo "  或: npm install -g pnpm" >&2
+  exit 1
+}
+ensure_pnpm
+PNPM_BIN="$(command -v pnpm)"
+
+# 服务运行用户：来自 sudo 的调用者；无 SUDO_USER 时回退 www-data（此时会整目录 chown 给该用户）
 if [ -n "${SUDO_USER:-}" ]; then
   RUN_USER="$SUDO_USER"
 else
-  echo "提示: 未检测到 SUDO_USER，服务将以 www-data 用户运行；建议用「普通用户 sudo」执行本脚本。" >&2
+  echo "提示: 未检测到 SUDO_USER（例如用 root su 直接执行）。将使用用户 www-data 运行服务；" >&2
+  echo "      建议改为: ssh 普通用户登录后执行 sudo bash $0，以便目录属主为该用户。" >&2
   RUN_USER=www-data
 fi
 
@@ -53,19 +82,36 @@ homeportal_runtime_teardown() {
 }
 homeportal_runtime_teardown
 
-# 若目录属主为 root 且通过「用户 sudo」调用，整目录交给该用户以便 npm 写入
-if [ "$(stat -c '%U' "$INSTALL_DIR" 2>/dev/null || echo root)" = root ] && [ -n "${SUDO_USER:-}" ]; then
-  chown -R "$RUN_USER:$RUN_USER" "$INSTALL_DIR"
-fi
-
-echo "HomePortal 安装目录: $INSTALL_DIR"
-echo "依赖安装 (npm install --production)，用户: $RUN_USER ..."
-if id "$RUN_USER" &>/dev/null; then
-  sudo -u "$RUN_USER" bash -c "cd '$INSTALL_DIR' && npm install --production"
-else
+if ! id "$RUN_USER" &>/dev/null; then
   echo "错误: 系统用户 $RUN_USER 不存在" >&2
   exit 1
 fi
+
+# 安装目录必须对 RUN_USER 可写（pnpm 建 node_modules）；仅当属主为 root 时自动 chown，避免误改普通用户家目录
+_cur_u="$(stat -c '%U' "$INSTALL_DIR" 2>/dev/null || echo '')"
+if ! sudo -u "$RUN_USER" test -w "$INSTALL_DIR" 2>/dev/null; then
+  if [ "$_cur_u" = "root" ]; then
+    echo "▸ 目录属主为 root，调整为 $RUN_USER 以便安装依赖..."
+    chown -R "$RUN_USER:$RUN_USER" "$INSTALL_DIR"
+  else
+    echo "错误: 用户 $RUN_USER 对 $INSTALL_DIR 无写权限（当前属主: ${_cur_u:-?}）。" >&2
+    echo "  请执行: sudo chown -R $RUN_USER:$RUN_USER $INSTALL_DIR" >&2
+    echo "  或使用: sudo -u $_cur_u bash $0（从仓库属主用户执行 sudo）" >&2
+    exit 1
+  fi
+fi
+
+echo "HomePortal 安装目录: $INSTALL_DIR"
+echo "▸ 依赖安装: pnpm install --prod（用户: $RUN_USER，Node $($NODE_BIN -v)，$($PNPM_BIN -v)）"
+
+# HOME 指向项目目录，避免 www-data 等用户因 /var/www 不可写导致 npm/pnpm 缓存失败
+LOCK_EXTRA=""
+[ -f "$INSTALL_DIR/pnpm-lock.yaml" ] && LOCK_EXTRA="--frozen-lockfile"
+sudo -u "$RUN_USER" \
+  env HOME="$INSTALL_DIR" \
+  NPM_CONFIG_CACHE="$INSTALL_DIR/.npm-cache" \
+  XDG_CONFIG_HOME="$INSTALL_DIR/.config" \
+  bash -c "cd '$INSTALL_DIR' && exec '$PNPM_BIN' install --prod $LOCK_EXTRA"
 
 # ---------- 首次向导 ----------
 if [ ! -f "$MARKER" ]; then
