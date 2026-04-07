@@ -17,12 +17,22 @@ const BASE_PATH = rawBase.replace(/\/+$/, '') || '';
 
 const DATA_FILE      = path.join(__dirname, 'data', 'services.json');
 const JWT_SECRET     = process.env.JWT_SECRET     || 'homeportal-secret-change-me';
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'rainy';
-const PORTAL_TITLE   = process.env.PORTAL_TITLE   || '指引页';
+const ADMIN_PASSWORD = String(process.env.ADMIN_PASSWORD ?? 'rainy').trim();
+const PORTAL_TITLE   = String(process.env.PORTAL_TITLE   ?? '指引页').trim() || '指引页';
 
 const r = express.Router();
+const publicDir = path.join(__dirname, 'public');
 
-r.use(express.static(path.join(__dirname, 'public')));
+// 直接打开 /admin.html 时重定向到 /#admin（地址栏显示哈希路由）；?embed=1 供首页 iframe 嵌入，避免重定向死循环
+r.get('/admin.html', (req, res) => {
+  if (req.query.embed === '1' || req.query.embed === 'true') {
+    return res.sendFile(path.join(publicDir, 'admin.html'));
+  }
+  const prefix = BASE_PATH || '';
+  res.redirect(302, prefix ? `${prefix}/#admin` : '/#admin');
+});
+
+r.use(express.static(publicDir));
 
 // ── Data helpers ──────────────────────────────────────────────────────────────
 
@@ -66,7 +76,8 @@ r.get('/api/config', (_req, res) => {
 // Login
 r.post('/api/auth', (req, res) => {
   const { password } = req.body || {};
-  if (!password || password !== ADMIN_PASSWORD) {
+  const pwd = String(password ?? '').trim();
+  if (!pwd || pwd !== ADMIN_PASSWORD) {
     return res.status(401).json({ error: '密码错误' });
   }
   const token = jwt.sign({ role: 'admin' }, JWT_SECRET, { expiresIn: '7d' });
@@ -166,7 +177,7 @@ if (BASE_PATH) {
 const baseLabel = BASE_PATH || '(根路径)';
 app.listen(PORT, LISTEN_HOST, () => {
   console.log(`\n  🌐 HomePortal  →  http://${LISTEN_HOST}:${PORT}${BASE_PATH || ''}/`);
-  console.log(`  🔧 Admin Panel →  http://${LISTEN_HOST}:${PORT}${BASE_PATH || ''}/admin.html`);
+  console.log(`  🔧 Admin Panel →  http://${LISTEN_HOST}:${PORT}${BASE_PATH || ''}/#admin`);
   console.log(`  📁 Data file   →  ${DATA_FILE}`);
   console.log(`  📍 BASE_PATH   →  ${baseLabel}\n`);
 });

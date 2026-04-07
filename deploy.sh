@@ -10,6 +10,7 @@
 #   DOMAIN         公网域名（如 www.example.com）；未设置时尝试 hostname -f
 #   USE_HTTPS=0    不尝试 HTTPS（仅 HTTP）
 #   CERTBOT_EMAIL  可选邮箱；默认 admin@域名
+#   PORTAL_TITLE   浏览器标签页标题（覆盖「指引页」）；首次向导可交互输入；再次部署可传此变量写回 .env
 #
 # 主 Nginx：/etc/nginx/conf.d/<根域标签>.conf（由域名倒数第二段命名，无域名为 _default.conf）
 # Location 片段：/etc/nginx/conf.d/locations/home-portal.conf（location /，根路径直达）
@@ -348,6 +349,16 @@ if [ ! -f "$MARKER" ]; then
   echo ""
   [ -z "${HPWD:-}" ] && HPWD=rainy
 
+  if [ -n "${PORTAL_TITLE:-}" ]; then
+    PT_VALUE="$PORTAL_TITLE"
+    echo "▸ 使用环境变量 PORTAL_TITLE=$PT_VALUE"
+  elif [ -t 0 ]; then
+    read -r -p "浏览器标签页标题 PORTAL_TITLE（回车=指引页）: " _pt_line
+    PT_VALUE="${_pt_line:-指引页}"
+  else
+    PT_VALUE="指引页"
+  fi
+
   JWT_SECRET_VALUE="$(openssl rand -hex 32)"
 
   {
@@ -355,7 +366,7 @@ if [ ! -f "$MARKER" ]; then
     echo "LISTEN_HOST=127.0.0.1"
     printf 'ADMIN_PASSWORD=%q\n' "$HPWD"
     echo "JWT_SECRET=$JWT_SECRET_VALUE"
-    echo "PORTAL_TITLE=指引页"
+    printf 'PORTAL_TITLE=%q\n' "$PT_VALUE"
   } > "$INSTALL_DIR/.env"
 
   chmod 600 "$INSTALL_DIR/.env"
@@ -392,6 +403,17 @@ PORT="$APP_PORT"
 # 旧 .env 无 LISTEN_HOST 时补全
 if ! grep -qE '^[[:space:]]*LISTEN_HOST=' "$INSTALL_DIR/.env" 2>/dev/null; then
   echo "LISTEN_HOST=127.0.0.1" >> "$INSTALL_DIR/.env"
+fi
+
+# 若本次在环境中传入 PORTAL_TITLE，覆盖写入 .env（便于 bash 一行改标签名后重载）
+if [ -n "${PORTAL_TITLE:-}" ] && [ -f "$INSTALL_DIR/.env" ]; then
+  _tmp="$(mktemp)"
+  grep -vE '^[[:space:]]*PORTAL_TITLE=' "$INSTALL_DIR/.env" > "$_tmp" 2>/dev/null || true
+  printf 'PORTAL_TITLE=%q\n' "$PORTAL_TITLE" >> "$_tmp"
+  mv "$_tmp" "$INSTALL_DIR/.env"
+  chown "$RUN_USER:$RUN_USER" "$INSTALL_DIR/.env" 2>/dev/null || true
+  chmod 600 "$INSTALL_DIR/.env" 2>/dev/null || true
+  echo "▸ 已同步 PORTAL_TITLE 到 .env: $PORTAL_TITLE"
 fi
 
 # ── systemd 服务 ──────────────────────────────────────────────────────────────
@@ -568,20 +590,20 @@ fi
 
 if [ "$HTTPS_ENABLED" = "1" ] && [ -n "$DOMAIN_RESOLVED" ]; then
   echo "  ✓ 首页（HTTPS）: https://${DOMAIN_RESOLVED}/"
-  echo "  ✓ 管理后台:      https://${DOMAIN_RESOLVED}/admin.html"
+  echo "  ✓ 管理后台:      https://${DOMAIN_RESOLVED}/#admin"
   echo "  ✓ Release Hub:   https://${DOMAIN_RESOLVED}/releasehub/"
   echo "  直连 Node（排障用）: http://$SERVER_IP:$PORT"
 elif [ "$NGINX_ENABLED" = "1" ]; then
   if [ -n "$DOMAIN_RESOLVED" ]; then
     echo "  ✓ 首页（HTTP）: http://${DOMAIN_RESOLVED}/"
-    echo "  ✓ 管理后台:     http://${DOMAIN_RESOLVED}/admin.html"
+    echo "  ✓ 管理后台:     http://${DOMAIN_RESOLVED}/#admin"
     echo "  ✓ Release Hub:  http://${DOMAIN_RESOLVED}/releasehub/"
     echo "  直连 Node（排障用）: http://$SERVER_IP:$PORT"
     echo "  启用 HTTPS：确保 DNS 已解析后重新运行: sudo bash deploy.sh"
     echo "           或: certbot certonly --nginx -d $DOMAIN_RESOLVED（成功后再次运行 deploy.sh）"
   else
     echo "  ✓ 首页（HTTP）: http://$SERVER_IP/"
-    echo "  ✓ 管理后台:     http://$SERVER_IP/admin.html"
+    echo "  ✓ 管理后台:     http://$SERVER_IP/#admin"
     echo "  ✓ Release Hub:  http://$SERVER_IP/releasehub/"
     echo "  启用 HTTPS：设置 DOMAIN=你的域名 后重新运行: DOMAIN=example.com sudo bash deploy.sh"
   fi
