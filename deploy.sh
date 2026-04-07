@@ -4,6 +4,12 @@
 # 用法：在 HomePortal 目录执行
 #   sudo bash deploy.sh
 #
+# 域名 DOMAIN：若曾成功部署过，会写入本目录 .deploy-domain，下次直接 sudo 即可。
+# 首次或需改域名时须让 root 进程能拿到变量（任选其一）：
+#   sudo env DOMAIN=www.example.com bash deploy.sh
+#   DOMAIN=www.example.com sudo -E bash deploy.sh
+# 勿用「DOMAIN=... sudo bash」——sudo 默认会丢弃该变量，脚本里会看到「未配置域名」。
+#
 # 安装目录 = 本脚本所在目录（与 server.js 同级）
 #
 # Nginx：默认安装；关闭：USE_NGINX=0 或 SKIP_NGINX=1
@@ -76,8 +82,16 @@ nginx_main_conf_path() {
   echo "/etc/nginx/conf.d/${label}.conf"
 }
 
-# ── 域名解析：DOMAIN → hostname -f（非保留名）→ 空 ──────────────────────────
+# ── 域名解析：DOMAIN 环境变量 → .deploy-domain → hostname -f（非保留名）→ 空 ──
 homeportal_resolve_domain() {
+  local _dd
+  if [ -z "${DOMAIN:-}" ] && [ -f "$INSTALL_DIR/.deploy-domain" ]; then
+    _dd="$(head -1 "$INSTALL_DIR/.deploy-domain" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    if [ -n "$_dd" ]; then
+      DOMAIN="$_dd"
+      echo "▸ 从 .deploy-domain 读取域名（sudo 不传变量时仍可用）: $DOMAIN"
+    fi
+  fi
   DOMAIN_RESOLVED="$(echo "${DOMAIN:-}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
   if [ -z "$DOMAIN_RESOLVED" ]; then
     local HFN
@@ -338,6 +352,13 @@ homeportal_resolve_domain
 MAIN_NGINX_CONF="$(nginx_main_conf_path "$DOMAIN_RESOLVED")"
 echo "▸ 主 Nginx 配置文件: $MAIN_NGINX_CONF"
 
+# 将公网域名写入 .deploy-domain：下次直接 「sudo bash deploy.sh」 也能读到（sudo 会丢掉 DOMAIN 环境变量）
+if [ -n "$DOMAIN_RESOLVED" ] && ! domain_is_nonpublic_hostname "$DOMAIN_RESOLVED"; then
+  echo "$DOMAIN_RESOLVED" > "$INSTALL_DIR/.deploy-domain"
+  chmod 644 "$INSTALL_DIR/.deploy-domain" 2>/dev/null || true
+  chown "$RUN_USER:$RUN_USER" "$INSTALL_DIR/.deploy-domain" 2>/dev/null || true
+fi
+
 # ── 首次部署向导 ──────────────────────────────────────────────────────────────
 if [ ! -f "$MARKER" ]; then
   echo ""
@@ -504,7 +525,9 @@ else
   fi
 
   if [ -z "$DOMAIN_RESOLVED" ]; then
-    echo "⚠ 未配置可用域名，跳过 HTTPS。请设置 DOMAIN=你的域名 并确保 DNS 指向本机后重试。"
+    echo "⚠ 未配置可用域名，跳过 HTTPS。请使用: sudo env DOMAIN=你的域名 bash deploy.sh"
+    echo "  （或 sudo -E bash deploy.sh 并在当前 shell 先 export DOMAIN=你的域名）"
+    echo "  勿使用「DOMAIN=... sudo bash」，sudo 默认不会把该变量传给 root。"
   else
     [ -z "$CERTBOT_EMAIL_VAL" ] && CERTBOT_EMAIL_VAL="admin@${DOMAIN_RESOLVED}"
     echo "▸ Certbot 邮箱: $CERTBOT_EMAIL_VAL"
@@ -605,7 +628,7 @@ elif [ "$NGINX_ENABLED" = "1" ]; then
     echo "  ✓ 首页（HTTP）: http://$SERVER_IP/"
     echo "  ✓ 管理后台:     http://$SERVER_IP/#admin"
     echo "  ✓ Release Hub:  http://$SERVER_IP/releasehub/"
-    echo "  启用 HTTPS：设置 DOMAIN=你的域名 后重新运行: DOMAIN=example.com sudo bash deploy.sh"
+    echo "  启用 HTTPS：sudo env DOMAIN=你的域名 bash deploy.sh（或写入 .deploy-domain 后仅 sudo bash deploy.sh）"
   fi
 else
   echo "  ⚠ Nginx 未安装/跳过；直连: http://127.0.0.1:${PORT}/"
